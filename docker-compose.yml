@@ -1,0 +1,12 @@
+services:
+  rednote-agent:
+    build: .
+    ports:
+      - "8000:8000"
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      REDNOTE_DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data
