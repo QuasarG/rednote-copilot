@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RedNoteMatrix Copilot — 创作工作台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Crimson+Pro:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='workbench.css') }}" />
+  </head>
+  <body>
+    <div class="app-bar">
+      <div class="app-bar-inner">
+        <div class="brand">
+          <div class="brand-cube">
+            <span></span><span></span><span></span>
+          </div>
+          <div>
+            <h1>RedNoteMatrix</h1>
+            <span class="tagline">种草文案 · Agent 工作台</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <main class="workspace">
+      <section class="panel panel-context" aria-label="商品背景">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="icon-badge">BG</span>
+            <span>商品背景</span>
+          </div>
+          <button class="btn btn-sm import-button" id="importJsonButton" type="button">
+            <span class="import-icon" aria-hidden="true"></span>
+            <span>导入 JSON</span>
+          </button>
+        </div>
+
+        <form class="context-form" id="agentForm">
+          <input id="jsonImportInput" type="file" accept="application/json,.json" hidden />
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">商品 / 服务</span>
+              <input name="product_name" required placeholder="例如：桌面收纳托盘" />
+            </label>
+            <label class="field">
+              <span class="field-label">品牌</span>
+              <input name="brand_name" placeholder="例如：Acme Home" />
+            </label>
+            <label class="field">
+              <span class="field-label">价格信息</span>
+              <input name="price" placeholder="仅供内部判断" />
+            </label>
+          </div>
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">目标人群</span>
+              <input name="target_audience" placeholder="例如：租房小桌面用户" />
+            </label>
+            <label class="field">
+              <span class="field-label">使用场景</span>
+              <input name="scenario" placeholder="例如：晚上办公找东西" />
+            </label>
+            <label class="field">
+              <span class="field-label">常用语气</span>
+              <input name="tone" value="自然、可信、轻种草" />
+            </label>
+          </div>
+          <label class="field">
+            <span class="field-label">核心卖点</span>
+            <textarea name="selling_points" rows="2" placeholder="一行一个卖点"></textarea>
+          </label>
+          <label class="field">
+            <span class="field-label">禁用词</span>
+            <textarea name="forbidden_words" rows="2" placeholder="一行一个禁用词，可选"></textarea>
+          </label>
+          <div class="composer-foot">
+            <label class="toggle">
+              <input id="realtimeToggle" name="enable_realtime_research" type="checkbox" />
+              <span class="toggle-track"></span>
+              <div>
+                <strong>MediaCrawler Node</strong>
+                <small>开启实时爆款检索；遇到 461 自动降级</small>
+              </div>
+            </label>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel panel-chat" aria-label="Agent 对话流">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="icon-badge">RM</span>
+            <span>Agent 对话流</span>
+          </div>
+          <span class="chip" id="outputState">waiting</span>
+        </div>
+
+        <div class="conversation" id="conversation">
+          <div class="msg msg-agent intro-msg">
+            <div class="msg-avatar">RM</div>
+            <div class="msg-bubble type-bubble">
+              <div class="msg-meta">Agent Ready</div>
+              <p class="typewriter" data-type-text="告诉我商品、品牌、人群和语气。我会实时展示节点进度，最终文案整理到右侧输出卡。"></p>
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-composer">
+          <textarea
+            form="agentForm"
+            name="custom_prompt"
+            rows="1"
+            placeholder="补充人设、风格、禁忌，或直接说你想要什么文案"
+          ></textarea>
+          <button class="btn btn-primary" id="submitButton" form="agentForm" type="submit">
+            <span>运行 Agent</span>
+            <span class="btn-arrow">→</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="panel panel-right" aria-label="Agent 输出结果">
+        <div class="output-card">
+          <div class="output-card-head">
+            <div>
+              <h2>只读文案输出</h2>
+            </div>
+          </div>
+
+          <div class="output-section">
+            <div class="output-section-head">
+              <strong>标题</strong>
+              <button class="btn btn-sm copy-button" data-copy-target="titles" type="button">
+                <span class="copy-icon" aria-hidden="true"></span>
+                <span class="copy-label">复制标题</span>
+              </button>
+            </div>
+            <div class="output-box" id="titleOutput">等待 Agent 输出。</div>
+          </div>
+
+          <div class="output-section">
+            <div class="output-section-head">
+              <strong>正文</strong>
+              <button class="btn btn-sm copy-button" data-copy-target="body" type="button">
+                <span class="copy-icon" aria-hidden="true"></span>
+                <span class="copy-label">复制正文</span>
+              </button>
+            </div>
+            <div class="output-box output-box-body" id="bodyOutput">等待 Agent 输出。</div>
+          </div>
+
+          <div class="output-section">
+            <div class="output-section-head">
+              <strong>标签</strong>
+              <button class="btn btn-sm copy-button" data-copy-target="tags" type="button">
+                <span class="copy-icon" aria-hidden="true"></span>
+                <span class="copy-label">复制标签</span>
+              </button>
+            </div>
+            <div class="output-box output-box-tags" id="tagOutput">等待 Agent 输出。</div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="{{ url_for('static', filename='workbench.js') }}"></script>
+  </body>
+</html>
