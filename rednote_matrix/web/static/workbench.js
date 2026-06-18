@@ -8,31 +8,85 @@ const promptInput = document.querySelector('.chat-composer textarea[name="custom
 const agentForm = document.querySelector("#agentForm");
 const importJsonButton = document.querySelector("#importJsonButton");
 const jsonImportInput = document.querySelector("#jsonImportInput");
+const chatComposer = document.querySelector(".chat-composer");
+const submitButtonLabel = submitButton.querySelector(".btn-label-full");
+const submitButtonCompactLabel = submitButton.querySelector(".btn-label-compact");
+const historyToggle = document.querySelector("#historyToggle");
+const historyClose = document.querySelector("#historyClose");
+const historyDrawer = document.querySelector("#historyDrawer");
+const historyList = document.querySelector("#historyList");
+const newConversationButton = document.querySelector("#newConversationButton");
+const PROMPT_INPUT_MAX_HEIGHT = 180;
 
 let activeAgentMessage = null;
 let outputParts = { titles: "", body: "", tags: "" };
+let hasSubmittedOnce = false;
+let isRunning = false;
+let conversationId = "";
+let lastSubmittedPayload = null;
+let latestResult = null;
 
 initTypewriters();
+syncSubmitAvailability();
+loadHistoryList();
 
 agentForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const payload = formToPayload(event.currentTarget);
+  const userMessage = promptInput.value.trim();
+  const changes = diffPayload(lastSubmittedPayload, payload);
+  if (isRunning || (hasSubmittedOnce && !userMessage && changes.length === 0)) {
+    return;
+  }
+  payload.message = userMessage;
+  payload.conversation_id = conversationId;
+  payload.changes = changes;
   resetRun();
-  appendMessage("user", "User Request", summaryFromPayload(payload));
+  appendUserTurn(userMessage, payload, changes);
   activeAgentMessage = appendAgentEventMessage();
+  hasSubmittedOnce = true;
+  isRunning = true;
+  lastSubmittedPayload = clonePayload(payload);
+  delete lastSubmittedPayload.message;
+  delete lastSubmittedPayload.conversation_id;
+  promptInput.value = "";
+  resetPromptInputHeight();
+  syncSubmitAvailability();
+  chatComposer.classList.add("is-compact");
   submitButton.disabled = true;
-  submitButton.querySelector("span").textContent = "运行中";
+  setSubmitButtonState("running");
 
   try {
     await streamAgent(payload);
   } finally {
+    isRunning = false;
     submitButton.disabled = false;
-    submitButton.querySelector("span").textContent = "运行 Agent";
+    setSubmitButtonState("idle");
+    syncSubmitAvailability();
   }
 });
 
 importJsonButton.addEventListener("click", () => {
   jsonImportInput.click();
+});
+
+historyToggle.addEventListener("click", async () => {
+  historyDrawer.classList.add("is-open");
+  historyDrawer.setAttribute("aria-hidden", "false");
+  await loadHistoryList();
+});
+
+historyClose.addEventListener("click", closeHistoryDrawer);
+
+historyDrawer.addEventListener("click", (event) => {
+  if (event.target === historyDrawer) {
+    closeHistoryDrawer();
+  }
+});
+
+newConversationButton.addEventListener("click", () => {
+  startNewConversation();
+  closeHistoryDrawer();
 });
 
 jsonImportInput.addEventListener("change", async () => {
@@ -51,8 +105,18 @@ jsonImportInput.addEventListener("change", async () => {
 });
 
 promptInput.addEventListener("input", () => {
-  promptInput.style.height = "auto";
-  promptInput.style.height = `${Math.min(promptInput.scrollHeight, 120)}px`;
+  growPromptInput();
+  syncSubmitAvailability();
+});
+
+agentForm.addEventListener("input", (event) => {
+  if (event.target === promptInput) return;
+  syncSubmitAvailability();
+});
+
+agentForm.addEventListener("change", (event) => {
+  if (event.target === promptInput) return;
+  syncSubmitAvailability();
 });
 
 document.querySelectorAll("[data-copy-target]").forEach((button) => {
@@ -91,6 +155,10 @@ function formToPayload(form) {
   return data;
 }
 
+function clonePayload(payload) {
+  return JSON.parse(JSON.stringify(payload));
+}
+
 function applyImportedJson(data) {
   const values = data.agent_input && typeof data.agent_input === "object" ? data.agent_input : data;
   const fieldNames = [
@@ -112,8 +180,9 @@ function applyImportedJson(data) {
     agentForm.enable_realtime_research.checked = Boolean(values.enable_realtime_research);
   }
   if (promptInput) {
-    promptInput.dispatchEvent(new Event("input"));
+    growPromptInput();
   }
+  syncSubmitAvailability();
 }
 
 function setFormValue(name, value) {
@@ -139,6 +208,49 @@ function markImportLoaded(filename) {
     importJsonButton.classList.remove("is-loaded");
     label.textContent = oldText || "导入 JSON";
   }, 1400);
+}
+
+function setSubmitButtonState(state) {
+  if (!submitButtonLabel || !submitButtonCompactLabel) return;
+  if (state === "running") {
+    submitButtonLabel.textContent = "运行中";
+    submitButtonCompactLabel.textContent = "↑";
+    submitButton.setAttribute("aria-label", "Agent 运行中");
+    return;
+  }
+  submitButtonLabel.textContent = "运行 Agent";
+  submitButtonCompactLabel.textContent = "↑";
+  submitButton.setAttribute("aria-label", hasSubmittedOnce ? "再次运行 Agent" : "运行 Agent");
+}
+
+function growPromptInput() {
+  if (!promptInput.value.trim()) {
+    resetPromptInputHeight();
+    return;
+  }
+  const nextHeight = Math.min(promptInput.scrollHeight, PROMPT_INPUT_MAX_HEIGHT);
+  if (nextHeight > promptInput.clientHeight + 2) {
+    promptInput.style.height = `${nextHeight}px`;
+  }
+}
+
+function resetPromptInputHeight() {
+  promptInput.style.height = "";
+}
+
+function syncSubmitAvailability() {
+  if (isRunning) {
+    submitButton.disabled = true;
+    return;
+  }
+  if (!hasSubmittedOnce) {
+    submitButton.disabled = false;
+    return;
+  }
+  const payload = formToPayload(agentForm);
+  const hasPrompt = Boolean(promptInput.value.trim());
+  const hasChanges = diffPayload(lastSubmittedPayload, payload).length > 0;
+  submitButton.disabled = !hasPrompt && !hasChanges;
 }
 
 function summaryFromPayload(payload) {
@@ -186,6 +298,9 @@ async function streamAgent(payload) {
 
 function handleEvent(event) {
   if (event.type === "accepted") {
+    if (event.conversation_id) {
+      conversationId = event.conversation_id;
+    }
     addAgentEvent("decision", "任务已接收", event.message);
     return;
   }
@@ -194,9 +309,11 @@ function handleEvent(event) {
     return;
   }
   if (event.type === "result") {
+    latestResult = event.result;
     renderDraft(event.result);
     outputState.textContent = "ready";
     finishAgentMessage();
+    loadHistoryList();
     return;
   }
   if (event.type === "error") {
@@ -226,6 +343,22 @@ function renderDraft(result) {
   streamHtmlTokens(titleOutput, markdownLines(titles.map((title, index) => `${index + 1}. ${title}`)));
   streamHtmlTokens(bodyOutput, escapeHtml(body).replace(/\n/g, "<br>"));
   streamHtmlTokens(tagOutput, tags.map((tag) => `<span class="tag-pill">${escapeHtml(tag)}</span>`).join(""));
+}
+
+function renderOutputParts(parts) {
+  outputParts = {
+    titles: String(parts?.titles || ""),
+    body: String(parts?.body || ""),
+    tags: String(parts?.tags || ""),
+  };
+  titleOutput.innerHTML = markdownLines(outputParts.titles.split("\n").filter(Boolean));
+  bodyOutput.innerHTML = escapeHtml(outputParts.body).replace(/\n/g, "<br>");
+  tagOutput.innerHTML = outputParts.tags
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((tag) => `<span class="tag-pill">${escapeHtml(tag)}</span>`)
+    .join("");
+  outputState.textContent = "ready";
 }
 
 function markdownLines(lines) {
@@ -271,6 +404,166 @@ function appendMessage(role, meta, text) {
   conversation.append(article);
   conversation.scrollTop = conversation.scrollHeight;
   return article;
+}
+
+function appendUserTurn(message, payload, changes) {
+  const fallback = hasSubmittedOnce ? "" : summaryFromPayload(payload);
+  const article = document.createElement("article");
+  article.className = "msg msg-user";
+  const avatar = document.createElement("div");
+  avatar.className = "msg-avatar";
+  avatar.textContent = "YOU";
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+  const head = document.createElement("div");
+  head.className = "msg-meta";
+  head.textContent = hasSubmittedOnce ? "User Follow-up" : "User Request";
+  const body = document.createElement("div");
+  body.className = "user-turn-body";
+
+  if (message) {
+    const prompt = document.createElement("p");
+    prompt.textContent = message;
+    body.append(prompt);
+  } else if (fallback) {
+    const prompt = document.createElement("p");
+    prompt.textContent = fallback;
+    body.append(prompt);
+  }
+  if (changes.length > 0 && hasSubmittedOnce) {
+    body.append(renderChangeList(changes));
+  }
+  bubble.append(head, body);
+  article.append(avatar, bubble);
+  conversation.append(article);
+  conversation.scrollTop = conversation.scrollHeight;
+}
+
+function appendRestoredUserTurn(turn, isFirst) {
+  const article = document.createElement("article");
+  article.className = "msg msg-user";
+  const avatar = document.createElement("div");
+  avatar.className = "msg-avatar";
+  avatar.textContent = "YOU";
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+  const head = document.createElement("div");
+  head.className = "msg-meta";
+  head.textContent = isFirst ? "User Request" : "User Follow-up";
+  const body = document.createElement("div");
+  body.className = "user-turn-body";
+  const text = document.createElement("p");
+  text.textContent = turn.message || (isFirst ? summaryFromPayload(turn.agent_input || {}) : "调整商品背景");
+  body.append(text);
+  if (Array.isArray(turn.changes) && turn.changes.length > 0) {
+    body.append(renderChangeList(turn.changes));
+  }
+  bubble.append(head, body);
+  article.append(avatar, bubble);
+  conversation.append(article);
+}
+
+function appendRestoredAgentTurn(turn, index) {
+  const article = document.createElement("article");
+  article.className = "msg msg-agent";
+  const avatar = document.createElement("div");
+  avatar.className = "msg-avatar";
+  avatar.textContent = "RM";
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+  const head = document.createElement("div");
+  head.className = "msg-meta";
+  head.innerHTML = `<strong>Agent</strong><span>${turn.status === "completed" ? "完成" : turn.status || "记录"}</span>`;
+  const finalText = document.createElement("div");
+  finalText.className = turn.status === "error" ? "final-hint event-error" : "final-hint";
+  finalText.textContent = turn.status === "error" ? `运行失败：${turn.error || "未知错误"}` : "Agent 回复已生成，请查看右端输出结果！";
+  bubble.append(head, finalText);
+  if (turn.output_parts) {
+    const actions = document.createElement("div");
+    actions.className = "turn-result-actions";
+    const button = document.createElement("button");
+    button.className = "restore-result-button";
+    button.type = "button";
+    button.textContent = `恢复第 ${index + 1} 轮结果`;
+    button.addEventListener("click", () => {
+      renderOutputParts(turn.output_parts);
+      latestResult = turn.result || null;
+    });
+    actions.append(button);
+    bubble.append(actions);
+  }
+  article.append(avatar, bubble);
+  conversation.append(article);
+}
+
+function renderChangeList(changes) {
+  const list = document.createElement("div");
+  list.className = "change-list";
+  changes.forEach((change) => {
+    const row = document.createElement("div");
+    row.className = "change-row";
+    const label = document.createElement("strong");
+    label.textContent = fieldLabel(change.key);
+    const oldValue = document.createElement("span");
+    oldValue.className = "change-old";
+    oldValue.textContent = change.before || "空";
+    const arrow = document.createElement("span");
+    arrow.className = "change-arrow";
+    arrow.textContent = "→";
+    const newValue = document.createElement("span");
+    newValue.className = "change-new";
+    newValue.textContent = change.after || "空";
+    row.append(label, oldValue, arrow, newValue);
+    list.append(row);
+  });
+  return list;
+}
+
+function diffPayload(previous, current) {
+  if (!previous) return [];
+  const keys = [
+    "product_name",
+    "brand_name",
+    "price",
+    "target_audience",
+    "scenario",
+    "tone",
+    "selling_points",
+    "forbidden_words",
+    "enable_realtime_research",
+  ];
+  return keys
+    .map((key) => ({
+      key,
+      before: normalizeComparable(previous[key]),
+      after: normalizeComparable(current[key]),
+    }))
+    .filter((item) => item.before !== item.after);
+}
+
+function normalizeComparable(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean).join("\n");
+  }
+  if (typeof value === "boolean") {
+    return value ? "开启" : "关闭";
+  }
+  return String(value ?? "").trim();
+}
+
+function fieldLabel(key) {
+  const labels = {
+    product_name: "商品",
+    brand_name: "品牌",
+    price: "价格",
+    target_audience: "人群",
+    scenario: "场景",
+    tone: "语气",
+    selling_points: "卖点",
+    forbidden_words: "禁用词",
+    enable_realtime_research: "MediaCrawler",
+  };
+  return labels[key] || key;
 }
 
 function appendAgentEventMessage() {
@@ -331,10 +624,137 @@ function resetRun() {
   tagOutput.textContent = "标签生成中...";
   outputState.textContent = "streaming";
   outputParts = { titles: "", body: "", tags: "" };
+  latestResult = null;
 }
 
 async function refreshStatus() {
   await fetch("/ui/status");
+}
+
+async function loadHistoryList() {
+  if (!historyList) return;
+  const response = await fetch("/ui/conversations");
+  if (!response.ok) return;
+  const data = await response.json();
+  const items = data.items || [];
+  historyList.innerHTML = "";
+  if (items.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "history-empty";
+    empty.textContent = "暂无历史对话。";
+    historyList.append(empty);
+    return;
+  }
+  items.forEach((item) => {
+    const button = document.createElement("button");
+    button.className = "history-item";
+    button.type = "button";
+    button.innerHTML = `
+      <strong>${escapeHtml(item.title || "未命名对话")}</strong>
+      <span>${escapeHtml(item.latest_message || "无新增要求")}</span>
+      <small>${item.turn_count || 0} 轮 · ${escapeHtml(formatTime(item.updated_at))}</small>
+    `;
+    button.addEventListener("click", () => restoreConversation(item.id));
+    historyList.append(button);
+  });
+}
+
+async function restoreConversation(id) {
+  const response = await fetch(`/ui/conversations/${encodeURIComponent(id)}`);
+  if (!response.ok) return;
+  const record = await response.json();
+  conversationId = record.id || "";
+  lastSubmittedPayload = clonePayload(record.agent_input || {});
+  hasSubmittedOnce = Boolean(record.turns?.length);
+  isRunning = false;
+  applyAgentInputToForm(lastSubmittedPayload);
+  conversation.innerHTML = "";
+  (record.turns || []).forEach((turn, index) => {
+    appendRestoredUserTurn(turn, index === 0);
+    appendRestoredAgentTurn(turn, index);
+  });
+  const latestCompleted = [...(record.turns || [])].reverse().find((turn) => turn.output_parts);
+  if (latestCompleted) {
+    renderOutputParts(latestCompleted.output_parts);
+    latestResult = latestCompleted.result || null;
+  }
+  chatComposer.classList.toggle("is-compact", hasSubmittedOnce);
+  setSubmitButtonState("idle");
+  syncSubmitAvailability();
+  closeHistoryDrawer();
+  conversation.scrollTop = conversation.scrollHeight;
+}
+
+function startNewConversation() {
+  conversationId = "";
+  activeAgentMessage = null;
+  outputParts = { titles: "", body: "", tags: "" };
+  hasSubmittedOnce = false;
+  isRunning = false;
+  lastSubmittedPayload = null;
+  latestResult = null;
+  agentForm.reset();
+  setFormValue("tone", "自然、可信、轻种草");
+  promptInput.value = "";
+  resetPromptInputHeight();
+  chatComposer.classList.remove("is-compact");
+  outputState.textContent = "waiting";
+  titleOutput.textContent = "等待 Agent 输出。";
+  bodyOutput.textContent = "等待 Agent 输出。";
+  tagOutput.textContent = "等待 Agent 输出。";
+  conversation.innerHTML = "";
+  appendIntroMessage();
+  setSubmitButtonState("idle");
+  syncSubmitAvailability();
+}
+
+function appendIntroMessage() {
+  const article = document.createElement("div");
+  article.className = "msg msg-agent intro-msg";
+  const avatar = document.createElement("div");
+  avatar.className = "msg-avatar";
+  avatar.textContent = "RM";
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble type-bubble";
+  const meta = document.createElement("div");
+  meta.className = "msg-meta";
+  meta.textContent = "Agent Ready";
+  const text = document.createElement("p");
+  text.className = "typewriter";
+  bubble.append(meta, text);
+  article.append(avatar, bubble);
+  conversation.append(article);
+  streamPlainTokens(text, "告诉我商品、品牌、人群和语气。我会实时展示节点进度，最终文案整理到右侧输出卡。");
+}
+
+function applyAgentInputToForm(input) {
+  const fields = [
+    "product_name",
+    "brand_name",
+    "price",
+    "target_audience",
+    "scenario",
+    "tone",
+    "selling_points",
+    "forbidden_words",
+  ];
+  fields.forEach((name) => setFormValue(name, input?.[name] ?? ""));
+  agentForm.enable_realtime_research.checked = Boolean(input?.enable_realtime_research);
+  promptInput.value = "";
+  resetPromptInputHeight();
+  syncSubmitAvailability();
+}
+
+function closeHistoryDrawer() {
+  historyDrawer.classList.remove("is-open");
+  historyDrawer.setAttribute("aria-hidden", "true");
+}
+
+function formatTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
 function escapeHtml(value) {

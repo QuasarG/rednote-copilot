@@ -13,9 +13,9 @@
     <div class="app-bar">
       <div class="app-bar-inner">
         <div class="brand">
-          <div class="brand-cube">
+          <button class="brand-cube" id="historyToggle" type="button" aria-label="打开历史对话">
             <span></span><span></span><span></span>
-          </div>
+          </button>
           <div>
             <h1>RedNoteMatrix</h1>
             <span class="tagline">种草文案 · Agent 工作台</span>
@@ -23,6 +23,25 @@
         </div>
       </div>
     </div>
+
+    <aside class="history-drawer" id="historyDrawer" aria-label="历史对话" aria-hidden="true">
+      <div class="history-panel">
+        <div class="history-head">
+          <div>
+            <strong>历史对话</strong>
+            <small>本地保存，不进入 Git</small>
+          </div>
+          <button class="history-close" id="historyClose" type="button" aria-label="关闭历史对话">×</button>
+        </div>
+        <button class="new-chat-button" id="newConversationButton" type="button">
+          <span class="new-chat-icon" aria-hidden="true"></span>
+          <span>新建对话</span>
+        </button>
+        <div class="history-list" id="historyList">
+          <div class="history-empty">暂无历史对话。</div>
+        </div>
+      </div>
+    </aside>
 
     <main class="workspace">
       <section class="panel panel-context" aria-label="商品背景">
@@ -115,7 +134,8 @@
             placeholder="补充人设、风格、禁忌，或直接说你想要什么文案"
           ></textarea>
           <button class="btn btn-primary" id="submitButton" form="agentForm" type="submit">
-            <span>运行 Agent</span>
+            <span class="btn-label-full">运行 Agent</span>
+            <span class="btn-label-compact" aria-hidden="true">↑</span>
             <span class="btn-arrow">→</span>
           </button>
         </div>
