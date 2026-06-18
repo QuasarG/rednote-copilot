@@ -7,6 +7,7 @@ __pycache__/
 .ruff_cache/
 
 data/
+.rednote_workbench_history/
 *.csv
 *.jsonl
 *.xlsx

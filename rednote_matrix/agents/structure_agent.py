@@ -15,6 +15,8 @@ STRUCTURE_SYSTEM_PROMPT = """
 爆款样本抽象：优先使用“生活瞬间/强场景 + 轻反差/意外 + 对象”的标题，不要只写“XX真实体验分享”。
 正文不要一上来卖产品，先写用户处境或原先误判，再自然带出产品。
 必须参考输入里的 trend_insight：标题模式、开头钩子、内容结构、互动策略、标签策略。
+必须参考 conversation_history、current_changes 和 current_message：历史记录用于理解连续修改意图，本轮 current_message 与 current_changes 优先级最高。
+如果用户说“加上/强调/删掉/更像/换成”等追问，要基于上一轮方向调整，但仍必须遵守事实边界与合规规则。
 严格事实边界：只能使用用户输入的商品名、品牌、卖点、人群、场景和自定义要求。禁止编造未输入的成分、数值、具体材质/配方、功效、版本、购买渠道。
 价格只作为内部判断预算和定位的参考，最终标题、正文、标签里不要出现具体价格、价格带或“售价/到手价/活动价”等交易表达。
 不得新增用户没提供的推荐来源、试用时长、购买经历、使用步骤、比例、身体反应、版本对比、成分细项。
@@ -39,6 +41,9 @@ def _llm_draft(user_input: AgentInput, trend_insight: TrendInsight, memory_conte
         "account_persona": user_input.account_persona,
         "tone": user_input.tone,
         "custom_prompt": user_input.custom_prompt,
+        "current_message": user_input.current_message,
+        "current_changes": user_input.current_changes,
+        "conversation_history": user_input.conversation_history,
         "memory_namespace": user_input.memory_namespace,
         "forbidden_words": user_input.forbidden_words,
         "trend_insight": trend_insight.model_dump(),

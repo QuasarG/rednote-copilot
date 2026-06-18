@@ -17,6 +17,7 @@ from rednote_matrix.integrations.xhs_core import (
     start_qrcode_login_process,
 )
 from rednote_matrix.memory.store import default_db_path
+from rednote_matrix.web.local_history import LocalConversationStore
 
 
 def create_app() -> Flask:
@@ -33,11 +34,23 @@ def create_app() -> Flask:
             {
                 "status": "ok",
                 "db_path": str(default_db_path()),
+                "history_dir": str(LocalConversationStore().history_dir),
                 "xhs_environment": result_to_dict(check_xhs_environment(deep=False)),
                 "xhs_auth": result_to_dict(check_xhs_auth()),
                 "persistent_browser": result_to_dict(persistent_browser_status()),
             }
         )
+
+    @app.get("/ui/conversations")
+    def ui_conversations() -> Response:
+        return jsonify({"items": LocalConversationStore().list_conversations()})
+
+    @app.get("/ui/conversations/<conversation_id>")
+    def ui_conversation_detail(conversation_id: str) -> Response:
+        record = LocalConversationStore().get(conversation_id)
+        if not record:
+            return jsonify({"detail": "对话不存在"}), 404
+        return jsonify(record)
 
     @app.post("/ui/xhs/login/qrcode")
     def ui_xhs_login_qrcode() -> Response:
@@ -71,17 +84,54 @@ def create_app() -> Flask:
         payload = request.get_json(force=True)
 
         def generate():
+            conversation_id = ""
+            turn_id = ""
+            store = LocalConversationStore()
             try:
-                agent_input = _agent_input_from_payload(payload)
-                yield _sse({"type": "accepted", "message": "任务已进入 Agent 图"})
+                conversation_payload = _prepare_conversation_payload(payload, store)
+                conversation_id = conversation_payload["conversation_id"]
+                turn_id = conversation_payload["turn_id"]
+                agent_input = _agent_input_from_payload(conversation_payload["agent_input"])
+                accepted_event = {
+                    "type": "accepted",
+                    "message": "任务已进入 Agent 图",
+                    "conversation_id": conversation_id,
+                    "turn_id": turn_id,
+                }
+                store.append_event(conversation_id, turn_id, accepted_event)
+                yield _sse(accepted_event)
                 for event in stream_agent_events(agent_input):
+                    if event.get("type") == "result":
+                        store.finish_turn(conversation_id, turn_id, event)
+                    else:
+                        store.append_event(conversation_id, turn_id, event)
                     yield _sse(event)
             except Exception as exc:
+                if conversation_id and turn_id:
+                    store.fail_turn(conversation_id, turn_id, str(exc))
                 yield _sse({"type": "error", "message": str(exc)})
 
         return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
     return app
+
+
+def _prepare_conversation_payload(payload: dict[str, Any], store: LocalConversationStore) -> dict[str, Any]:
+    message = str(payload.get("message") or "").strip()
+    conversation_id = str(payload.get("conversation_id") or "").strip() or None
+    changes = payload.get("changes") if isinstance(payload.get("changes"), list) else []
+    agent_patch = {key: value for key, value in payload.items() if key not in {"message", "conversation_id", "changes"}}
+    existing_record = store.get(conversation_id or "") if conversation_id else None
+    agent_patch["current_message"] = message
+    agent_patch["current_changes"] = changes
+    agent_patch["conversation_history"] = store.history_for_agent(existing_record)
+    record, turn_id = store.start_turn(
+        conversation_id=conversation_id,
+        agent_input=agent_patch,
+        message=message,
+        changes=changes,
+    )
+    return {"conversation_id": record["id"], "turn_id": turn_id, "agent_input": agent_patch}
 
 
 def _agent_input_from_payload(payload: dict[str, Any]) -> AgentInput:
