@@ -1,0 +1,2 @@
+"""RedNoteMatrix Copilot backend package."""
+

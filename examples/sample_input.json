@@ -1,0 +1,17 @@
+{
+  "product_name": "桌面收纳托盘",
+  "brand_name": "",
+  "price": "",
+  "selling_points": [
+    "小桌面也能放下",
+    "拿东西不用翻半天",
+    "颜色不突兀"
+  ],
+  "target_audience": "桌面总是越用越乱的人",
+  "scenario": "租房小书桌和办公桌",
+  "account_persona": "真实分享型种草博主",
+  "tone": "自然、可信、轻种草",
+  "custom_prompt": "",
+  "memory_namespace": "default/桌面收纳托盘",
+  "forbidden_words": []
+}
