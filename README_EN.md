@@ -42,7 +42,13 @@ Most AI copywriting tools produce generic, templated Xiaohongshu posts that feel
 
 ### Usage Demo
 
-<video src="docs/assets/rednote-copilot-usage-demo.mp4" controls width="900"></video>
+<p align="center">
+  <a href="docs/assets/rednote-copilot-usage-demo.mp4">
+    <img src="docs/assets/rednote-copilot-usage-demo-cover.png" alt="RedNote Copilot usage demo video" width="900">
+  </a>
+  <br>
+  <sub>Click the image to open the full usage demo video.</sub>
+</p>
 
 ### Workflow Overview
 
