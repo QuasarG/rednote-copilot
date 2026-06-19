@@ -37,6 +37,10 @@ RedNote Copilot 不是“一键生成小红书文案”的普通聊天工具，�
   <img src="docs/assets/workbench-overview.png" alt="RedNote Copilot 工作台总览" width="900">
 </p>
 
+## 使用案例
+
+<video src="docs/assets/rednote-copilot-usage-demo.mp4" controls width="900"></video>
+
 ## 工作流概览
 
 <p align="center">

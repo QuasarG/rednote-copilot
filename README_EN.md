@@ -40,6 +40,10 @@ Most AI copywriting tools produce generic, templated Xiaohongshu posts that feel
   <img src="docs/assets/workbench-overview.png" alt="RedNote Copilot workbench overview" width="900">
 </p>
 
+### Usage Demo
+
+<video src="docs/assets/rednote-copilot-usage-demo.mp4" controls width="900"></video>
+
 ### Workflow Overview
 
 <p align="center">
