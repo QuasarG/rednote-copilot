@@ -4,13 +4,17 @@ import asyncio
 import base64
 import json
 import os
+import platform
 import random
 import re
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +32,8 @@ DEFAULT_SEARCH_TIMEOUT_SECONDS = 60
 DEFAULT_PAGE_SIZE = 20
 VERIFY_STATUS_CODES = {461, 471}
 VIRAL_LIKE_FLOOR = 1000
+CDP_DEBUG_PORT = 9222
+BROWSER_LAUNCH_TIMEOUT_SECONDS = 35
 
 
 @dataclass(frozen=True)
@@ -35,7 +41,6 @@ class XhsCoreEnvironment:
     configured: bool
     playwright_ok: bool
     xhshow_ok: bool
-    virtual_display_ok: bool
     errors: list[str]
     messages: list[str]
 
@@ -46,6 +51,8 @@ class XhsAuthStatus:
     cookie_path: str
     has_web_session: bool
     message: str = ""
+    verified: bool = False
+    browser_synced: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,7 +76,7 @@ class XhsPersistentBrowserStatus:
     log_path: str = ""
     pid: int | None = None
     message: str = ""
-    display_mode: str = "virtual_display"
+    display_mode: str = "headed"
 
 
 @dataclass(frozen=True)
@@ -80,6 +87,9 @@ class XhsSearchResult:
     notes: list[dict[str, Any]]
     return_code: int | None = None
     message: str = ""
+    login_session_id: str = ""
+    qrcode_path: str = ""
+    qrcode_url: str = ""
 
 
 class XhsVerificationRequired(RuntimeError):
@@ -113,12 +123,21 @@ def persistent_browser_dir() -> Path:
     return path
 
 
+def browser_profile_dir() -> Path:
+    path = xhs_data_dir() / "browser_profile"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _cdp_status_path() -> Path:
+    return persistent_browser_dir() / "cdp_status.json"
+
+
 def check_xhs_environment(deep: bool = False) -> XhsCoreEnvironment:
     errors: list[str] = []
     messages: list[str] = []
     playwright_ok = False
     xhshow_ok = False
-    virtual_display_ok = shutil.which("Xvfb") is not None
 
     try:
         import xhshow  # noqa: F401
@@ -148,24 +167,30 @@ def check_xhs_environment(deep: bool = False) -> XhsCoreEnvironment:
             errors.append(f"playwright chromium 启动失败: {exc}")
             playwright_ok = False
 
-    if virtual_display_ok:
-        messages.append("Xvfb 虚拟显示可用，可无窗口生成扫码登录二维码")
+    browser_path = _find_browser_path()
+    if browser_path:
+        messages.append(f"系统浏览器可用: {browser_path}")
     else:
-        messages.append("未检测到 Xvfb，本机无法使用 virtual_display 登录模式")
+        errors.append("未找到可用的 Chrome/Chromium/Edge 浏览器")
+
+    messages.append("浏览器以有头模式运行，Chrome 窗口会弹出")
 
     return XhsCoreEnvironment(
-        configured=xhshow_ok and playwright_ok,
+        configured=xhshow_ok and playwright_ok and bool(browser_path),
         playwright_ok=playwright_ok,
         xhshow_ok=xhshow_ok,
-        virtual_display_ok=virtual_display_ok,
         errors=errors,
         messages=messages,
     )
 
 
-def check_xhs_auth() -> XhsAuthStatus:
+def check_xhs_auth(sync_browser: bool = True) -> XhsAuthStatus:
     path = cookie_path()
     if not path.exists():
+        if sync_browser:
+            synced = sync_cookie_from_active_browser(verify=False)
+            if synced:
+                return synced
         return XhsAuthStatus(False, str(path), False, "未找到本地小红书 cookie")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -173,14 +198,57 @@ def check_xhs_auth() -> XhsAuthStatus:
         return XhsAuthStatus(False, str(path), False, "cookie 文件不是合法 JSON")
     cookie_text = payload.get("cookie", "")
     has_web_session = "web_session=" in cookie_text
-    return XhsAuthStatus(has_web_session, str(path), has_web_session, "已找到 web_session" if has_web_session else "cookie 缺少 web_session")
+    if not has_web_session:
+        return XhsAuthStatus(False, str(path), False, "cookie 缺少 web_session")
+    ok, message = _verify_cookie_sync(cookie_text)
+    if not ok and sync_browser:
+        synced = sync_cookie_from_active_browser(verify=False)
+        if synced:
+            return synced
+    return XhsAuthStatus(ok, str(path), True, message, ok)
 
 
 def save_cookie(cookie: str) -> XhsAuthStatus:
     path = cookie_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"cookie": cookie, "saved_at": int(time.time())}, ensure_ascii=False, indent=2), encoding="utf-8")
-    return check_xhs_auth()
+    has_web_session = "web_session=" in cookie
+    return XhsAuthStatus(has_web_session, str(path), has_web_session, "cookie 已保存，待验证", False)
+
+
+def sync_cookie_from_active_browser(verify: bool = False) -> XhsAuthStatus | None:
+    try:
+        return asyncio.run(_sync_cookie_from_active_browser(verify=verify))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(_sync_cookie_from_active_browser(verify=verify))
+        finally:
+            loop.close()
+    except Exception:
+        return None
+
+
+async def _sync_cookie_from_active_browser(verify: bool = False) -> XhsAuthStatus | None:
+    cdp_status = _read_json_file(_cdp_status_path())
+    pid = cdp_status.get("pid")
+    if not _process_alive(int(pid) if isinstance(pid, int) else None):
+        return None
+    try:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            context, _browser, _cdp = await _connect_cdp_context(playwright, headless=False)
+            cookie_text = _cookie_string(await context.cookies(urls=[XHS_DOMAIN]))
+    except Exception:
+        return None
+    if "web_session=" not in cookie_text:
+        return None
+    saved = save_cookie(cookie_text)
+    if not verify:
+        return XhsAuthStatus(True, saved.cookie_path, True, "已从 Chrome 同步登录态", False, True)
+    ok, message = _verify_cookie_sync(cookie_text)
+    return XhsAuthStatus(ok, saved.cookie_path, True, message, ok, True)
 
 
 def current_cookie() -> str:
@@ -191,6 +259,37 @@ def current_cookie() -> str:
         return json.loads(path.read_text(encoding="utf-8")).get("cookie", "")
     except json.JSONDecodeError:
         return ""
+
+
+def _verify_cookie_sync(cookie: str) -> tuple[bool, str]:
+    try:
+        return asyncio.run(_verify_cookie(cookie))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(_verify_cookie(cookie))
+        finally:
+            loop.close()
+    except Exception as exc:
+        return False, f"登录态验证失败: {exc}"
+
+
+async def _verify_cookie(cookie: str) -> tuple[bool, str]:
+    uri = "/api/sns/web/v1/user/selfinfo"
+    headers = {**_base_headers(cookie), **_signed_headers(uri, {}, cookie, "GET")}
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        response = await client.get(f"{XHS_HOST}{uri}", headers=headers)
+    if response.status_code in VERIFY_STATUS_CODES:
+        verify_type = response.headers.get("Verifytype", "")
+        verify_uuid = response.headers.get("Verifyuuid", "")
+        return False, f"登录态触发安全验证 Verifytype={verify_type or '-'}，Verifyuuid={verify_uuid or '-'}"
+    try:
+        payload = response.json()
+    except json.JSONDecodeError:
+        return False, f"登录态验证返回非 JSON: HTTP {response.status_code}"
+    if payload.get("data", {}).get("result", {}).get("success"):
+        return True, "登录态有效"
+    return False, str(payload.get("msg") or "登录已过期")
 
 
 def write_qrcode_image(base64_qrcode: str, session_dir: Path) -> str:
@@ -205,17 +304,33 @@ def write_qrcode_image(base64_qrcode: str, session_dir: Path) -> str:
 
 def _append_session_log(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as file:
+    try:
+        file = path.open("a", encoding="utf-8")
+    except PermissionError:
+        file = path.with_name(f"{path.stem}.local{path.suffix}").open("a", encoding="utf-8")
+    with file:
         file.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
 def _read_json_file(path: Path) -> dict[str, Any]:
-    if not path.exists():
+    fallback = path.with_name(f"{path.stem}.local{path.suffix}")
+    source = fallback if fallback.exists() else path
+    if not source.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(source.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
+
+
+def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    try:
+        path.write_text(text, encoding="utf-8")
+    except PermissionError:
+        fallback = path.with_name(f"{path.stem}.local{path.suffix}")
+        fallback.write_text(text, encoding="utf-8")
 
 
 def _process_alive(pid: int | None) -> bool:
@@ -228,6 +343,178 @@ def _process_alive(pid: int | None) -> bool:
     return True
 
 
+def _find_browser_path() -> str:
+    configured = [
+        os.environ.get("XHS_BROWSER_PATH", ""),
+        os.environ.get("CHROME_PATH", ""),
+        os.environ.get("CUSTOM_BROWSER_PATH", ""),
+    ]
+    for path in configured:
+        if path and Path(path).is_file():
+            return path
+
+    system = platform.system()
+    if system == "Windows":
+        candidates = [
+            os.path.expandvars(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%PROGRAMFILES%\Microsoft\Edge\Application\msedge.exe"),
+            os.path.expandvars(r"%PROGRAMFILES(X86)%\Microsoft\Edge\Application\msedge.exe"),
+        ]
+    elif system == "Darwin":
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
+            "/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ]
+    else:
+        candidates = [
+            str(Path.home() / ".local/bin/google-chrome"),
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/chromium",
+            "/snap/bin/chromium",
+            "/usr/bin/microsoft-edge",
+            "/usr/bin/microsoft-edge-stable",
+        ]
+
+    commands = [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium-browser",
+        "chromium",
+        "microsoft-edge",
+        "msedge",
+    ]
+    candidates.extend(str(Path(found)) for command in commands if (found := shutil.which(command)))
+    for path in dict.fromkeys(candidates):
+        if path and Path(path).is_file():
+            return path
+    return ""
+
+
+def _find_available_port(start_port: int = CDP_DEBUG_PORT) -> int:
+    for port in range(start_port, start_port + 100):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise RuntimeError(f"未找到可用 CDP 端口: {start_port}-{start_port + 99}")
+
+
+async def _cdp_websocket_url(port: int, timeout_seconds: int = 10) -> str:
+    deadline = time.time() + timeout_seconds
+    last_error = ""
+    while time.time() < deadline:
+        try:
+            async with httpx.AsyncClient(timeout=3) as client:
+                response = await client.get(f"http://127.0.0.1:{port}/json/version")
+            if response.status_code == 200:
+                ws_url = response.json().get("webSocketDebuggerUrl", "")
+                if ws_url:
+                    return ws_url
+        except Exception as exc:
+            last_error = str(exc)
+        await asyncio.sleep(0.5)
+    raise RuntimeError(f"Chrome CDP 端口未就绪: {last_error or port}")
+
+
+def _terminate_process_tree(pid: int | None) -> None:
+    if not _process_alive(pid):
+        return
+    if platform.system() == "Windows":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, check=False)
+        return
+    try:
+        os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except Exception:
+        os.kill(int(pid), signal.SIGTERM)
+
+
+async def _ensure_cdp_browser(headless: bool = False, force_restart: bool = False) -> dict[str, Any]:
+    status_path = _cdp_status_path()
+    current = _read_json_file(status_path)
+    pid = current.get("pid")
+    port = int(current.get("port") or 0)
+    if force_restart:
+        _terminate_process_tree(int(pid) if isinstance(pid, int) else None)
+    elif _process_alive(pid) and port:
+        try:
+            ws_url = await _cdp_websocket_url(port, timeout_seconds=3)
+            return {"pid": int(pid), "port": port, "ws_url": ws_url, "browser_path": current.get("browser_path", "")}
+        except Exception:
+            pass
+
+    browser_path = _find_browser_path()
+    if not browser_path:
+        raise RuntimeError("未找到可用的 Chrome/Chromium/Edge 浏览器")
+
+    port = _find_available_port()
+    user_data_dir = browser_profile_dir()
+    cdp_log = persistent_browser_dir() / "chrome_cdp.log"
+    args = [
+        browser_path,
+        f"--remote-debugging-port={port}",
+        "--remote-debugging-address=127.0.0.1",
+        "--remote-allow-origins=*",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-features=TranslateUI",
+        "--disable-ipc-flooding-protection",
+        "--disable-hang-monitor",
+        "--disable-prompt-on-repost",
+        "--disable-sync",
+        "--disable-dev-shm-usage",
+        "--disable-infobars",
+        "--start-maximized",
+        f"--user-data-dir={user_data_dir}",
+        XHS_DOMAIN,
+    ]
+    if headless:
+        args.remove("--start-maximized")
+        args.extend(["--headless=new", "--disable-gpu"])
+
+    if platform.system() == "Windows":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        process = subprocess.Popen(args, stdout=cdp_log.open("a", encoding="utf-8"), stderr=subprocess.STDOUT, creationflags=creationflags)
+    else:
+        process = subprocess.Popen(args, stdout=cdp_log.open("a", encoding="utf-8"), stderr=subprocess.STDOUT, start_new_session=True)
+
+    ws_url = await _cdp_websocket_url(port, timeout_seconds=BROWSER_LAUNCH_TIMEOUT_SECONDS)
+    payload = {
+        "pid": process.pid,
+        "port": port,
+        "browser_path": browser_path,
+        "user_data_dir": str(user_data_dir),
+        "log_path": str(cdp_log),
+        "headless": headless,
+        "updated_at": int(time.time()),
+    }
+    _write_json_file(status_path, payload)
+    return {**payload, "ws_url": ws_url}
+
+
+async def _connect_cdp_context(playwright: Any, headless: bool = False, force_restart: bool = False) -> tuple[Any, Any, dict[str, Any]]:
+    cdp = await _ensure_cdp_browser(headless=headless, force_restart=force_restart)
+    browser = await playwright.chromium.connect_over_cdp(cdp["ws_url"], timeout=BROWSER_LAUNCH_TIMEOUT_SECONDS * 1000)
+    context = browser.contexts[0] if browser.contexts else await browser.new_context(
+        viewport={"width": 1280, "height": 900},
+        user_agent=_user_agent(),
+        accept_downloads=True,
+    )
+    return context, browser, cdp
+
+
 def _persistent_paths() -> dict[str, Path]:
     base = persistent_browser_dir()
     return {
@@ -236,7 +523,7 @@ def _persistent_paths() -> dict[str, Path]:
         "log": base / "browser.log",
         "worker_log": base / "worker.log",
         "qrcode": base / "qrcode.png",
-        "user_data": base / "user_data",
+        "user_data": browser_profile_dir(),
     }
 
 
@@ -245,8 +532,6 @@ def start_persistent_browser(timeout_seconds: int = 0, force_restart: bool = Fal
     paths = _persistent_paths()
     if not env.configured:
         return XhsPersistentBrowserStatus("error", message="；".join(env.errors) or "小红书核心环境未配置")
-    if not shutil.which("Xvfb"):
-        return XhsPersistentBrowserStatus("error", message="未安装 Xvfb，Docker 镜像会内置该依赖")
 
     current = _read_json_file(paths["status"])
     pid = current.get("pid")
@@ -265,11 +550,11 @@ def start_persistent_browser(timeout_seconds: int = 0, force_restart: bool = Fal
         "cookie_path": str(cookie_path()),
         "log_path": str(paths["log"]),
         "message": "常驻浏览器后台任务已启动",
-        "display_mode": "virtual_display",
+        "display_mode": "headed",
         "updated_at": int(time.time()),
     }
-    paths["status"].write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
-    _append_session_log(paths["log"], {"status": "starting", "message": "常驻浏览器后台任务已启动", "display_mode": "virtual_display"})
+    _write_json_file(paths["status"], status)
+    _append_session_log(paths["log"], {"status": "starting", "message": "常驻浏览器后台任务已启动", "display_mode": "headed"})
     cmd = [
         sys.executable,
         "-m",
@@ -287,21 +572,25 @@ def start_persistent_browser(timeout_seconds: int = 0, force_restart: bool = Fal
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
     status["pid"] = process.pid
-    paths["status"].write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_file(paths["status"], status)
     return persistent_browser_status()
 
 
 def persistent_browser_status() -> XhsPersistentBrowserStatus:
     paths = _persistent_paths()
     status = _read_json_file(paths["status"])
+    cdp_status = _read_json_file(_cdp_status_path())
     pid = status.get("pid")
-    alive = _process_alive(pid)
+    cdp_pid = cdp_status.get("pid")
+    alive = _process_alive(pid) or _process_alive(cdp_pid)
     auth = check_xhs_auth()
     raw_status = str(status.get("status") or "stopped")
-    if raw_status == "stopped":
+    if raw_status == "stopped" and not _process_alive(cdp_pid):
         alive = False
     if raw_status not in {"stopped", "error", "blocked", "timeout"}:
         raw_status = raw_status if alive else "stopped"
+    elif raw_status == "stopped" and alive:
+        raw_status = "browser_ready"
     if auth.available and alive:
         raw_status = "logged_in"
         message = "常驻浏览器运行中，已检测到登录态"
@@ -313,9 +602,9 @@ def persistent_browser_status() -> XhsPersistentBrowserStatus:
         qrcode_url="/integrations/xhs/browser/qrcode",
         cookie_path=auth.cookie_path,
         log_path=str(status.get("log_path") or paths["log"]),
-        pid=int(pid) if isinstance(pid, int) else None,
+        pid=int(cdp_pid) if isinstance(cdp_pid, int) else (int(pid) if isinstance(pid, int) else None),
         message=message,
-        display_mode=str(status.get("display_mode") or "virtual_display"),
+        display_mode=str(status.get("display_mode") or "headed"),
     )
 
 
@@ -329,8 +618,14 @@ def stop_persistent_browser() -> XhsPersistentBrowserStatus:
             if not _process_alive(pid):
                 break
             time.sleep(0.1)
+    cdp_status = _read_json_file(_cdp_status_path())
+    cdp_pid = cdp_status.get("pid")
+    if isinstance(cdp_pid, int):
+        _terminate_process_tree(cdp_pid)
+        cdp_status.update({"pid": None, "status": "stopped", "updated_at": int(time.time())})
+        _write_json_file(_cdp_status_path(), cdp_status)
     status.update({"status": "stopped", "pid": None, "message": "常驻浏览器已停止", "updated_at": int(time.time())})
-    paths["status"].write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_file(paths["status"], status)
     _append_session_log(paths["log"], {"status": "stopped", "message": "常驻浏览器已停止"})
     return persistent_browser_status()
 
@@ -338,19 +633,11 @@ def stop_persistent_browser() -> XhsPersistentBrowserStatus:
 def start_qrcode_login_process(
     headless: bool = False,
     timeout_seconds: int = 180,
-    use_virtual_display: bool = True,
 ) -> XhsLoginSession:
     env = check_xhs_environment(deep=False)
-    display_mode = "virtual_display" if use_virtual_display else ("headless" if headless else "visible")
+    display_mode = "headed"
     if not env.configured:
         return XhsLoginSession("", "error", message="；".join(env.errors) or "小红书核心环境未配置", display_mode=display_mode)
-    if use_virtual_display and not shutil.which("Xvfb"):
-        return XhsLoginSession(
-            "",
-            "error",
-            message="未安装 Xvfb，不能无窗口运行有头 Chromium；Docker 镜像会内置该依赖",
-            display_mode=display_mode,
-        )
 
     session_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
     session_dir = xhs_data_dir() / "sessions" / session_id
@@ -365,9 +652,9 @@ def start_qrcode_login_process(
         "-m",
         "rednote_matrix.integrations.xhs_login_worker",
         session_id,
-        "true" if headless else "false",
+        "false",
         str(timeout_seconds),
-        "true" if use_virtual_display else "false",
+        "false",
     ]
     with worker_log_path.open("w", encoding="utf-8") as worker_log:
         subprocess.Popen(
@@ -391,7 +678,7 @@ def start_qrcode_login_process(
 
 
 def run_login_worker(session_id: str, headless: bool, timeout_seconds: int, use_virtual_display: bool = False) -> None:
-    asyncio.run(_run_login_worker(session_id, headless, timeout_seconds, use_virtual_display))
+    asyncio.run(_run_login_worker(session_id, timeout_seconds))
 
 
 def run_persistent_browser_worker(timeout_seconds: int = 0) -> None:
@@ -402,7 +689,6 @@ async def _run_persistent_browser_worker(timeout_seconds: int) -> None:
     paths = _persistent_paths()
     log_path = paths["log"]
     status_path = paths["status"]
-    xvfb_process: subprocess.Popen | None = None
 
     def write_status(payload: dict[str, Any]) -> None:
         current = _read_json_file(status_path)
@@ -412,42 +698,41 @@ async def _run_persistent_browser_worker(timeout_seconds: int) -> None:
                 "qrcode_path": str(paths["qrcode"]),
                 "cookie_path": str(cookie_path()),
                 "log_path": str(log_path),
-                "display_mode": "virtual_display",
+                "display_mode": "headed",
                 "updated_at": int(time.time()),
                 **payload,
             }
         )
-        status_path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(status_path, current)
         _append_session_log(log_path, payload)
 
     try:
         from playwright.async_api import async_playwright
 
-        xvfb_process, display = _start_virtual_display(log_path)
-        os.environ["DISPLAY"] = display
-        write_status({"status": "virtual_display_ready", "message": "虚拟显示器已启动", "display": display})
-
         async with async_playwright() as playwright:
-            context = await playwright.chromium.launch_persistent_context(
-                user_data_dir=str(paths["user_data"]),
-                headless=False,
-                viewport={"width": 1280, "height": 900},
-                user_agent=_user_agent(),
-            )
+            context, browser, cdp = await _connect_cdp_context(playwright, headless=False)
+            write_status({"status": "browser_ready", "pid": cdp.get("pid"), "message": "CDP Chrome 已启动，等待登录"})
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(XHS_DOMAIN, wait_until="domcontentloaded")
             await page.wait_for_timeout(3000)
             security_message = await _security_limit_message(page)
             if security_message:
                 write_status({"status": "blocked", "message": security_message})
-                await context.close()
                 return
 
+            login_ready = False
             cookie_str = _cookie_string(await context.cookies(urls=[XHS_DOMAIN]))
             if "web_session=" in cookie_str:
-                save_cookie(cookie_str)
-                write_status({"status": "logged_in", "message": "常驻浏览器已复用现有登录态"})
-            else:
+                ok, message = await _verify_cookie(cookie_str)
+                if ok:
+                    save_cookie(cookie_str)
+                    login_ready = True
+                    write_status({"status": "logged_in", "message": "常驻浏览器已复用现有登录态"})
+                else:
+                    await _clear_xhs_cookies(context)
+                    write_status({"status": "login_expired", "message": f"旧登录态无效：{message}，等待重新扫码"})
+
+            if not login_ready:
                 base64_qrcode = await _find_login_qrcode(page)
                 if not base64_qrcode:
                     clicked = await _click_login_entry(page)
@@ -464,48 +749,58 @@ async def _run_persistent_browser_worker(timeout_seconds: int) -> None:
             while deadline is None or time.time() < deadline:
                 cookie_str = _cookie_string(await context.cookies(urls=[XHS_DOMAIN]))
                 if "web_session=" in cookie_str:
-                    save_cookie(cookie_str)
-                    write_status({"status": "logged_in", "message": "常驻浏览器运行中，已同步登录态"})
+                    ok, message = await _verify_cookie(cookie_str)
+                    if ok:
+                        save_cookie(cookie_str)
+                        write_status({"status": "logged_in", "message": "常驻浏览器运行中，已同步登录态"})
+                    else:
+                        write_status({"status": "waiting_login", "message": f"检测到 cookie 但未验证通过：{message}"})
                 await asyncio.sleep(10)
 
             write_status({"status": "timeout", "message": "常驻浏览器达到设定运行时长"})
-            await context.close()
     except Exception as exc:
         write_status({"status": "error", "message": str(exc)})
-    finally:
-        if xvfb_process and xvfb_process.poll() is None:
-            xvfb_process.terminate()
-            try:
-                xvfb_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                xvfb_process.kill()
 
 
-async def _run_login_worker(session_id: str, headless: bool, timeout_seconds: int, use_virtual_display: bool) -> None:
+async def _run_login_worker(session_id: str, timeout_seconds: int) -> None:
     session_dir = xhs_data_dir() / "sessions" / session_id
     log_path = session_dir / "login.log"
     qrcode_path = session_dir / "qrcode.png"
-    xvfb_process: subprocess.Popen | None = None
 
     try:
         from playwright.async_api import async_playwright
 
-        if use_virtual_display:
-            xvfb_process, display = _start_virtual_display(log_path)
-            os.environ["DISPLAY"] = display
-            headless = False
-
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=headless)
-            context = await browser.new_context(viewport={"width": 1280, "height": 900})
-            page = await context.new_page()
+            context, _browser, cdp = await _connect_cdp_context(playwright, headless=False)
+            _append_session_log(
+                log_path,
+                {
+                    "status": "browser_ready",
+                    "message": "CDP Chrome 已启动，等待二维码登录",
+                    "pid": cdp.get("pid"),
+                    "port": cdp.get("port"),
+                    "display_mode": "headed",
+                },
+            )
+            page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(XHS_DOMAIN, wait_until="domcontentloaded")
             await page.wait_for_timeout(3000)
             security_message = await _security_limit_message(page)
             if security_message:
                 _append_session_log(log_path, {"status": "blocked", "message": security_message})
-                await browser.close()
                 return
+
+            cookie_str = _cookie_string(await context.cookies(urls=[XHS_DOMAIN]))
+            if "web_session=" in cookie_str:
+                ok, message = await _verify_cookie(cookie_str)
+                if ok:
+                    save_cookie(cookie_str)
+                    _append_session_log(log_path, {"status": "logged_in", "cookie_path": str(cookie_path()), "display_mode": "headed"})
+                    return
+                await _clear_xhs_cookies(context)
+                _append_session_log(log_path, {"status": "login_expired", "message": f"旧登录态无效：{message}，等待重新扫码", "display_mode": "headed"})
+                await page.goto(XHS_DOMAIN, wait_until="domcontentloaded")
+                await page.wait_for_timeout(1500)
 
             base64_qrcode = await _find_login_qrcode(page)
             if not base64_qrcode:
@@ -514,7 +809,6 @@ async def _run_login_worker(session_id: str, headless: bool, timeout_seconds: in
                     security_message = await _security_limit_message(page)
                     if security_message:
                         _append_session_log(log_path, {"status": "blocked", "message": security_message})
-                        await browser.close()
                         return
                     raise RuntimeError("未找到小红书登录入口")
                 base64_qrcode = await _find_login_qrcode(page)
@@ -522,38 +816,38 @@ async def _run_login_worker(session_id: str, headless: bool, timeout_seconds: in
                 raise RuntimeError("未找到小红书登录二维码")
 
             written_path = write_qrcode_image(base64_qrcode, session_dir)
-            display_mode = "virtual_display" if use_virtual_display else ("headless" if headless else "visible")
-            _append_session_log(log_path, {"status": "qrcode_ready", "qrcode_path": written_path, "display_mode": display_mode})
-            no_logged_session = _cookie_dict(await context.cookies()).get("web_session", "")
+            _append_session_log(log_path, {"status": "qrcode_ready", "qrcode_path": written_path, "display_mode": "headed"})
             deadline = time.time() + timeout_seconds
             logged_in = False
+            cookie_str = ""
             while time.time() < deadline:
-                cookie_dict = _cookie_dict(await context.cookies())
-                current_session = cookie_dict.get("web_session", "")
-                if current_session and current_session != no_logged_session:
-                    logged_in = True
-                    break
+                cookie_str = _cookie_string(await context.cookies(urls=[XHS_DOMAIN]))
+                if "web_session=" in cookie_str:
+                    page_ready = not await _page_requires_login(page)
+                    ok, message = await _verify_cookie(cookie_str)
+                    if ok or page_ready:
+                        logged_in = True
+                        if not ok:
+                            _append_session_log(
+                                log_path,
+                                {
+                                    "status": "browser_cookie_ready",
+                                    "message": f"Chrome 已出现登录态，接口验证暂未通过：{message}",
+                                    "display_mode": "headed",
+                                },
+                            )
+                        break
                 await asyncio.sleep(1)
 
             if not logged_in:
-                _append_session_log(log_path, {"status": "timeout", "qrcode_path": str(qrcode_path), "display_mode": display_mode})
-                await browser.close()
+                _append_session_log(log_path, {"status": "timeout", "qrcode_path": str(qrcode_path), "display_mode": "headed"})
                 return
 
-            cookie_str = _cookie_string(await context.cookies(urls=[XHS_DOMAIN]))
             (session_dir / "cookie.json").write_text(json.dumps({"cookie": cookie_str}, ensure_ascii=False, indent=2), encoding="utf-8")
             save_cookie(cookie_str)
-            _append_session_log(log_path, {"status": "logged_in", "cookie_path": str(cookie_path()), "display_mode": display_mode})
-            await browser.close()
+            _append_session_log(log_path, {"status": "logged_in", "cookie_path": str(cookie_path()), "display_mode": "headed"})
     except Exception as exc:
         _append_session_log(log_path, {"status": "error", "message": str(exc)})
-    finally:
-        if xvfb_process and xvfb_process.poll() is None:
-            xvfb_process.terminate()
-            try:
-                xvfb_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                xvfb_process.kill()
 
 
 def login_session_status(session_id: str) -> XhsLoginSession:
@@ -561,7 +855,7 @@ def login_session_status(session_id: str) -> XhsLoginSession:
     qrcode_path = session_dir / "qrcode.png"
     log_path = session_dir / "login.log"
     auth = check_xhs_auth()
-    if auth.available:
+    if auth.available or auth.browser_synced:
         return XhsLoginSession(session_id, "logged_in", str(qrcode_path), auth.cookie_path, str(log_path), "已检测到登录态")
     if not session_dir.exists():
         return XhsLoginSession(session_id, "missing", message="找不到登录会话")
@@ -604,13 +898,12 @@ def search_xhs_keywords(
     execute: bool = True,
     timeout_seconds: int = DEFAULT_SEARCH_TIMEOUT_SECONDS,
     browser_fallback: bool = True,
+    on_note: Callable[[dict[str, Any]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> XhsSearchResult:
     env = check_xhs_environment(deep=False)
     if not env.configured:
         return XhsSearchResult("unconfigured", "", {"keywords": keywords}, [], message="；".join(env.errors) or "小红书核心环境未配置")
-    auth = check_xhs_auth()
-    if not auth.available:
-        return XhsSearchResult("needs_login", "", {"keywords": keywords}, [], message=auth.message)
 
     clean_keywords = [keyword.strip() for keyword in keywords if keyword.strip()]
     if not clean_keywords:
@@ -624,8 +917,51 @@ def search_xhs_keywords(
 
     started = time.time()
     search_mode = "http"
+    emitted_notes: list[dict[str, Any]] = []
+
+    def record_note(note: dict[str, Any]) -> None:
+        emitted_notes.append(note)
+        _emit_note(on_note, note)
+
+    auth = check_xhs_auth()
+    if not auth.available:
+        if auth.has_web_session and browser_fallback:
+            try:
+                notes = asyncio.run(_search_keywords_with_browser(clean_keywords, safe_count, timeout_seconds, record_note, should_stop))
+                search_mode = "browser"
+                notes = _dedupe_notes([*emitted_notes, *notes])
+                if notes:
+                    notes.sort(key=lambda item: _interaction_score(item), reverse=True)
+                    notes = notes[:safe_count]
+                    result_file = output_path / "xhs_search_notes.jsonl"
+                    result_file.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in notes), encoding="utf-8")
+                    viral_count = sum(1 for item in notes if _is_viral_note(item))
+                    message = f"搜索完成，用时 {round(time.time() - started, 1)}s，模式 {search_mode}，读取 {len(notes)} 条笔记，其中高互动候选 {viral_count} 条"
+                    return XhsSearchResult("completed", str(output_path), request_meta, notes, return_code=0, message=message)
+            except Exception as browser_exc:
+                return XhsSearchResult(
+                    "verification_required",
+                    str(output_path),
+                    {**request_meta, "fallback": "browser", "auth_message": auth.message, "fallback_error": str(browser_exc)},
+                    [],
+                    return_code=1,
+                    message=f"Chrome 登录态已同步，但浏览器检索失败: {browser_exc}",
+                )
+        if not browser_fallback:
+            return XhsSearchResult("needs_login", str(output_path), request_meta, [], message=auth.message)
+        session = start_qrcode_login_process(timeout_seconds=timeout_seconds)
+        return XhsSearchResult(
+            "needs_login",
+            str(output_path),
+            {**request_meta, "auth_message": auth.message},
+            [],
+            message=f"{auth.message}；已启动 Chrome 登录窗口，请扫码登录后重新执行搜索",
+            login_session_id=session.session_id,
+            qrcode_path=session.qrcode_path,
+            qrcode_url=f"/integrations/xhs/login/{session.session_id}/qrcode" if session.session_id else "",
+        )
     try:
-        notes = asyncio.run(_search_keywords(clean_keywords, safe_count, timeout_seconds))
+        notes = asyncio.run(_search_keywords(clean_keywords, safe_count, timeout_seconds, record_note, should_stop))
     except XhsVerificationRequired as exc:
         if not browser_fallback:
             return XhsSearchResult(
@@ -637,8 +973,9 @@ def search_xhs_keywords(
                 message=str(exc),
             )
         try:
-            notes = asyncio.run(_search_keywords_with_browser(clean_keywords, safe_count, timeout_seconds))
+            notes = asyncio.run(_search_keywords_with_browser(clean_keywords, safe_count, timeout_seconds, record_note, should_stop))
             search_mode = "browser"
+            notes = _dedupe_notes([*emitted_notes, *notes])
             if not notes:
                 return XhsSearchResult(
                     "verification_required",
@@ -672,8 +1009,32 @@ def search_xhs_keywords(
                 message=f"{exc}；浏览器 fallback 未拿到结果: {browser_exc}",
             )
     except Exception as exc:
-        return XhsSearchResult("error", str(output_path), request_meta, [], return_code=1, message=f"小红书搜索失败: {exc}")
+        if not browser_fallback:
+            return XhsSearchResult("error", str(output_path), request_meta, [], return_code=1, message=f"小红书搜索失败: {exc}")
+        try:
+            notes = asyncio.run(_search_keywords_with_browser(clean_keywords, safe_count, timeout_seconds, record_note, should_stop))
+            search_mode = "browser"
+            notes = _dedupe_notes([*emitted_notes, *notes])
+            if not notes:
+                return XhsSearchResult(
+                    "needs_login",
+                    str(output_path),
+                    {**request_meta, "fallback": "browser", "http_error": str(exc)},
+                    [],
+                    return_code=1,
+                    message=f"HTTP 搜索不可用：{exc}；Chrome 已打开，请在窗口内完成登录后重试搜索",
+                )
+        except Exception as browser_exc:
+            return XhsSearchResult(
+                "error",
+                str(output_path),
+                {**request_meta, "fallback_error": str(browser_exc), "http_error": str(exc)},
+                [],
+                return_code=1,
+                message=f"小红书搜索失败: {exc}；浏览器 fallback 失败: {browser_exc}",
+            )
 
+    notes = _dedupe_notes([*emitted_notes, *notes])
     notes.sort(key=lambda item: _interaction_score(item), reverse=True)
     notes = notes[:safe_count]
     result_file = output_path / "xhs_search_notes.jsonl"
@@ -683,7 +1044,13 @@ def search_xhs_keywords(
     return XhsSearchResult("completed", str(output_path), request_meta, notes, return_code=0, message=message)
 
 
-async def _search_keywords(keywords: list[str], limit: int, timeout_seconds: int) -> list[dict[str, Any]]:
+async def _search_keywords(
+    keywords: list[str],
+    limit: int,
+    timeout_seconds: int,
+    on_note: Callable[[dict[str, Any]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> list[dict[str, Any]]:
     cookie = current_cookie()
     headers = _base_headers(cookie)
     notes: list[dict[str, Any]] = []
@@ -691,6 +1058,8 @@ async def _search_keywords(keywords: list[str], limit: int, timeout_seconds: int
     per_keyword = max(DEFAULT_PAGE_SIZE, min(limit, DEFAULT_PAGE_SIZE))
     async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
         for keyword in keywords:
+            if _should_stop(should_stop):
+                return notes
             payload = {
                 "keyword": keyword,
                 "page": 1,
@@ -729,116 +1098,196 @@ async def _search_keywords(keywords: list[str], limit: int, timeout_seconds: int
                     continue
                 seen.add(note_id)
                 notes.append(note)
+                _emit_note(on_note, note)
                 if len(notes) >= limit:
+                    return notes
+                if _should_stop(should_stop):
                     return notes
             await asyncio.sleep(1.2 + random.random() * 1.5)
     return notes
 
 
-async def _search_keywords_with_browser(keywords: list[str], limit: int, timeout_seconds: int) -> list[dict[str, Any]]:
+_browser_context = None
+_browser_playwright = None
+
+
+def _get_shared_browser():
+    """获取共享浏览器实例，首次调用时创建，之后复用且不关闭。"""
+    return _browser_context, _browser_playwright
+
+
+def _set_shared_browser(context, playwright):
+    global _browser_context, _browser_playwright
+    _browser_context = context
+    _browser_playwright = playwright
+
+
+async def _search_keywords_with_browser(
+    keywords: list[str],
+    limit: int,
+    timeout_seconds: int,
+    on_note: Callable[[dict[str, Any]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> list[dict[str, Any]]:
     from playwright.async_api import async_playwright
 
-    paths = _persistent_paths()
     notes: list[dict[str, Any]] = []
     seen: set[str] = set()
-    xvfb_process: subprocess.Popen | None = None
-    log_path = paths["log"]
+    context = _browser_context
+    playwright_mgr = _browser_playwright
+    if context is None:
+        playwright_mgr = await async_playwright().start()
+        context, _browser, _cdp = await _connect_cdp_context(playwright_mgr, headless=False)
+        _set_shared_browser(context, playwright_mgr)
 
+    cookie_items = _playwright_cookies_from_cookie_string(current_cookie())
+    if cookie_items:
+        await context.add_cookies(cookie_items)
     try:
-        if shutil.which("Xvfb"):
-            xvfb_process, display = _start_virtual_display(log_path)
-            os.environ["DISPLAY"] = display
-            headless = False
-        else:
-            headless = True
+        page = context.pages[0] if context.pages else await context.new_page()
+        await page.goto(XHS_DOMAIN, wait_until="domcontentloaded", timeout=timeout_seconds * 1000)
+        await page.wait_for_timeout(2500)
+        security_message = await _security_limit_message(page)
+        if security_message:
+            raise XhsVerificationRequired(461, verify_type="browser", verify_uuid="")
+        cookie_str = _cookie_string(await context.cookies(urls=[XHS_DOMAIN]))
+        if "web_session=" in cookie_str:
+            ok, _ = await _verify_cookie(cookie_str)
+            if ok or not await _page_requires_login(page):
+                save_cookie(cookie_str)
 
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(
-                headless=headless,
-            )
-            context = await browser.new_context(viewport={"width": 1280, "height": 900}, user_agent=_user_agent())
-            cookie_items = _playwright_cookies_from_cookie_string(current_cookie())
-            if cookie_items:
-                await context.add_cookies(cookie_items)
+        for keyword in keywords:
+            if _should_stop(should_stop):
+                return notes
+            captured: list[dict[str, Any]] = []
+            response_tasks: list[asyncio.Task] = []
+            verification: XhsVerificationRequired | None = None
+
+            async def capture_response(response: Any) -> None:
+                nonlocal verification
+                url = response.url
+                if "/api/sns/web/v1/search/notes" not in url:
+                    return
+                if response.status in VERIFY_STATUS_CODES:
+                    verification = XhsVerificationRequired(
+                        response.status,
+                        response.headers.get("Verifytype", ""),
+                        response.headers.get("Verifyuuid", ""),
+                    )
+                    return
+                try:
+                    payload = await response.json()
+                except Exception:
+                    return
+                for item in payload.get("data", {}).get("items", []):
+                    note = _note_from_search_item(item, keyword)
+                    if note.get("note_id") or note.get("note_url") or note.get("title"):
+                        captured.append(note)
+
+            def schedule_capture(response: Any) -> None:
+                response_tasks.append(asyncio.create_task(capture_response(response)))
+
+            page.on("response", schedule_capture)
+            search_url = f"{XHS_DOMAIN}/search_result?keyword={quote(keyword)}&source=web_search_result_notes"
             try:
-                page = context.pages[0] if context.pages else await context.new_page()
-                await page.goto(XHS_DOMAIN, wait_until="domcontentloaded", timeout=timeout_seconds * 1000)
-                await page.wait_for_timeout(2500)
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=timeout_seconds * 1000)
+                await page.wait_for_timeout(3500 + int(random.random() * 1500))
+                if await _page_requires_login(page):
+                    await _wait_for_browser_login(page, context, timeout_seconds)
+                    await page.goto(search_url, wait_until="domcontentloaded", timeout=timeout_seconds * 1000)
+                    await page.wait_for_timeout(3500 + int(random.random() * 1500))
+                for _ in range(3):
+                    await page.mouse.wheel(0, 700)
+                    await page.wait_for_timeout(1000 + int(random.random() * 800))
+                if response_tasks:
+                    await asyncio.gather(*response_tasks, return_exceptions=True)
+                if verification:
+                    raise verification
                 security_message = await _security_limit_message(page)
                 if security_message:
                     raise XhsVerificationRequired(461, verify_type="browser", verify_uuid="")
-                cookie_str = _cookie_string(await context.cookies(urls=[XHS_DOMAIN]))
-                if "web_session=" in cookie_str:
-                    save_cookie(cookie_str)
 
-                for keyword in keywords:
-                    captured: list[dict[str, Any]] = []
-                    response_tasks: list[asyncio.Task] = []
-                    verification: XhsVerificationRequired | None = None
-
-                    async def capture_response(response: Any) -> None:
-                        nonlocal verification
-                        url = response.url
-                        if "/api/sns/web/v1/search/notes" not in url:
-                            return
-                        if response.status in VERIFY_STATUS_CODES:
-                            verification = XhsVerificationRequired(
-                                response.status,
-                                response.headers.get("Verifytype", ""),
-                                response.headers.get("Verifyuuid", ""),
-                            )
-                            return
-                        try:
-                            payload = await response.json()
-                        except Exception:
-                            return
-                        for item in payload.get("data", {}).get("items", []):
-                            note = _note_from_search_item(item, keyword)
-                            if note.get("note_id") or note.get("note_url") or note.get("title"):
-                                captured.append(note)
-
-                    def schedule_capture(response: Any) -> None:
-                        response_tasks.append(asyncio.create_task(capture_response(response)))
-
-                    page.on("response", schedule_capture)
-                    search_url = f"{XHS_DOMAIN}/search_result?keyword={quote(keyword)}&source=web_search_result_notes"
-                    try:
-                        await page.goto(search_url, wait_until="domcontentloaded", timeout=timeout_seconds * 1000)
-                        await page.wait_for_timeout(3500 + int(random.random() * 1500))
-                        for _ in range(3):
-                            await page.mouse.wheel(0, 700)
-                            await page.wait_for_timeout(1000 + int(random.random() * 800))
-                        if response_tasks:
-                            await asyncio.gather(*response_tasks, return_exceptions=True)
-                        if verification:
-                            raise verification
-                        security_message = await _security_limit_message(page)
-                        if security_message:
-                            raise XhsVerificationRequired(461, verify_type="browser", verify_uuid="")
-
-                        page_notes = [*captured, *await _extract_notes_from_search_page(page, keyword)]
-                        for note in page_notes:
-                            note_id = note.get("note_id") or note.get("note_url") or note.get("title")
-                            if not note_id or note_id in seen:
-                                continue
-                            seen.add(note_id)
-                            notes.append(note)
-                            if len(notes) >= limit:
-                                return notes
-                    finally:
-                        page.remove_listener("response", schedule_capture)
-                    await asyncio.sleep(2.5 + random.random() * 2.0)
+                page_notes = [*captured, *await _extract_notes_from_search_page(page, keyword)]
+                for note in page_notes:
+                    note_id = note.get("note_id") or note.get("note_url") or note.get("title")
+                    if not note_id or note_id in seen:
+                        continue
+                    seen.add(note_id)
+                    notes.append(note)
+                    _emit_note(on_note, note)
+                    if len(notes) >= limit:
+                        return notes
+                    if _should_stop(should_stop):
+                        return notes
             finally:
-                await context.close()
-                await browser.close()
+                page.remove_listener("response", schedule_capture)
+            await asyncio.sleep(2.5 + random.random() * 2.0)
     finally:
-        if xvfb_process and xvfb_process.poll() is None:
-            xvfb_process.terminate()
-            try:
-                xvfb_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                xvfb_process.kill()
+        cookie_str = _cookie_string(await context.cookies(urls=[XHS_DOMAIN]))
+        if "web_session=" in cookie_str:
+            ok, _ = await _verify_cookie(cookie_str)
+            if ok or (context.pages and not await _page_requires_login(context.pages[0])):
+                save_cookie(cookie_str)
     return notes
+
+
+def _emit_note(on_note: Callable[[dict[str, Any]], None] | None, note: dict[str, Any]) -> None:
+    if not on_note:
+        return
+    try:
+        on_note(dict(note))
+    except Exception:
+        return
+
+
+def _dedupe_notes(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique_notes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for note in notes:
+        key = str(note.get("note_id") or note.get("note_url") or note.get("title") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique_notes.append(note)
+    return unique_notes
+
+
+def _should_stop(should_stop: Callable[[], bool] | None) -> bool:
+    if not should_stop:
+        return False
+    try:
+        return bool(should_stop())
+    except Exception:
+        return False
+
+
+async def _page_requires_login(page: Any) -> bool:
+    try:
+        body = await page.locator("body").inner_text(timeout=3000)
+    except Exception:
+        return False
+    text = " ".join(body.split())
+    return "登录后查看搜索结果" in text or "扫码" in text and "手机号登录" in text
+
+
+async def _wait_for_browser_login(page: Any, context: Any, timeout_seconds: int) -> None:
+    deadline = time.time() + max(30, timeout_seconds)
+    while time.time() < deadline:
+        cookie_str = _cookie_string(await context.cookies(urls=[XHS_DOMAIN]))
+        if "web_session=" in cookie_str:
+            ok, _ = await _verify_cookie(cookie_str)
+            if ok and not await _page_requires_login(page):
+                save_cookie(cookie_str)
+                return
+        try:
+            if await _page_looks_logged_in(page):
+                ok, _ = await _verify_cookie(cookie_str)
+                if ok:
+                    save_cookie(cookie_str)
+                    return
+        except Exception:
+            pass
+        await asyncio.sleep(2)
 
 
 async def _extract_notes_from_search_page(page: Any, keyword: str) -> list[dict[str, Any]]:
@@ -923,22 +1372,6 @@ async def _find_login_qrcode(page: Any) -> str:
     return ""
 
 
-def _start_virtual_display(log_path: Path) -> tuple[subprocess.Popen, str]:
-    xvfb_path = shutil.which("Xvfb")
-    if not xvfb_path:
-        raise RuntimeError("未安装 Xvfb，无法启动虚拟显示")
-    for _ in range(6):
-        display_number = 90 + random.randint(0, 700)
-        display = f":{display_number}"
-        cmd = [xvfb_path, display, "-screen", "0", "1280x900x24", "-nolisten", "tcp"]
-        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        time.sleep(0.5)
-        if process.poll() is None:
-            _append_session_log(log_path, {"status": "virtual_display_ready", "display": display, "display_mode": "virtual_display"})
-            return process, display
-    raise RuntimeError("Xvfb 启动失败")
-
-
 async def _click_login_entry(page: Any) -> bool:
     locators = [
         page.get_by_text("登录", exact=True),
@@ -969,6 +1402,35 @@ async def _security_limit_message(page: Any) -> str:
         text = " ".join(body.split())
         return text[:300] or "小红书安全限制：当前 IP 或浏览器环境存在风险"
     return ""
+
+
+async def _page_looks_logged_in(page: Any) -> bool:
+    try:
+        profile_entry = page.locator("xpath=//a[contains(@href, '/user/profile/')]//span[normalize-space()='我']")
+        if await profile_entry.first.is_visible(timeout=500):
+            return True
+    except Exception:
+        pass
+    try:
+        profile_link = page.locator("a[href*='/user/profile/']")
+        return await profile_link.first.is_visible(timeout=500)
+    except Exception:
+        return False
+
+
+async def _clear_xhs_cookies(context: Any) -> None:
+    try:
+        cookies = await context.cookies()
+        names = {
+            str(cookie.get("name"))
+            for cookie in cookies
+            if "xiaohongshu.com" in str(cookie.get("domain") or "")
+        }
+        if not names:
+            return
+        await context.clear_cookies()
+    except Exception:
+        return
 
 
 def _note_from_search_item(item: dict[str, Any], keyword: str) -> dict[str, Any]:
@@ -1095,7 +1557,7 @@ def _count_to_number(value: Any) -> float:
 
 
 def _user_agent() -> str:
-    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.114 Safari/537.36"
 
 
 def result_to_dict(result: Any) -> dict[str, Any]:

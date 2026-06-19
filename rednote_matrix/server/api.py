@@ -66,8 +66,6 @@ class CookieRequest(BaseModel):
 
 
 class QrcodeLoginRequest(BaseModel):
-    headless: bool = False
-    use_virtual_display: bool = True
     timeout_seconds: int = 180
 
 
@@ -98,27 +96,54 @@ def health() -> dict[str, Any]:
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     conversations = ConversationStore()
+    agent_patch = _agent_input_patch_from_chat_request(request)
     conversation = conversations.upsert_conversation(
         conversation_id=request.conversation_id,
-        title=request.agent_input.get("product_name", ""),
-        agent_input=request.agent_input,
+        title=agent_patch.get("product_name", ""),
+        agent_input=agent_patch,
     )
     if request.message:
-        conversations.add_message(conversation.id, "user", request.message, {"agent_input": request.agent_input})
+        conversations.add_message(conversation.id, "user", request.message, {"agent_input": agent_patch})
 
     try:
         agent_input = AgentInput.model_validate(conversation.agent_input)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail="至少需要提供 product_name，其他字段可多轮补充") from exc
-    result = run_agent(agent_input)
+        raise HTTPException(status_code=400, detail="输入格式不合法，请检查商品背景或自然语言需求") from exc
+    try:
+        result = run_agent(agent_input)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     output = render_user_copy(result)
     conversations.add_message(conversation.id, "assistant", output, result.model_dump())
+    conversations.upsert_conversation(
+        conversation_id=conversation.id,
+        title=result.resolved_user_input.get("product_name", ""),
+        agent_input=_public_resolved_input(result.resolved_user_input),
+    )
 
     return ChatResponse(
         conversation_id=conversation.id,
         output=output,
         result=result if request.debug else None,
     )
+
+
+def _agent_input_patch_from_chat_request(request: ChatRequest) -> dict[str, Any]:
+    patch = dict(request.agent_input or {})
+    message = request.message.strip()
+    if message:
+        patch["current_message"] = message
+        if not patch.get("raw_user_request") and not patch.get("product_name"):
+            patch["raw_user_request"] = message
+    return patch
+
+
+def _public_resolved_input(agent_input: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in agent_input.items()
+        if key not in {"conversation_history", "current_changes", "current_message", "raw_user_request"}
+    }
 
 
 @app.post("/memories")
@@ -200,9 +225,7 @@ def get_xhs_persistent_browser_qrcode() -> FileResponse:
 @app.post("/integrations/xhs/login/qrcode")
 def start_xhs_qrcode_login(request: QrcodeLoginRequest) -> dict[str, Any]:
     session = start_qrcode_login_process(
-        headless=request.headless,
         timeout_seconds=request.timeout_seconds,
-        use_virtual_display=request.use_virtual_display,
     )
     if session.status == "error":
         raise HTTPException(status_code=500, detail=session.message)
