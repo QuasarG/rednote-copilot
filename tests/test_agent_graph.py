@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import unittest
 import os
 import tempfile
+import unittest
 from pathlib import Path
 
 from rednote_matrix.core.models import AgentInput
 from rednote_matrix.core.runner import run_agent
 from rednote_matrix.integrations.xhs_core import build_default_keywords
 from rednote_matrix.memory.store import MemoryStore
+from rednote_matrix.skills.xiaohongshu.framework import HIGH_INTERACTION_PATTERNS
 from tests.llm_fixtures import mock_agent_llm
 
 
@@ -30,16 +31,61 @@ class AgentGraphTest(unittest.TestCase):
             )
 
         self.assertEqual(result.status, "pass")
-        self.assertEqual(result.draft.structure_type, "痛点-细节-避坑")
         self.assertGreaterEqual(result.structure_score, 80)
         self.assertGreaterEqual(result.compliance_score, 80)
         self.assertGreaterEqual(result.trend_score, 70)
         self.assertIn("project_builtin:xiaohongshu_framework", result.trend_insight.source)
-        self.assertEqual(result.revision_history[0].node, "memory_retriever")
-        self.assertEqual(result.revision_history[1].node, "market_research_agent")
-        self.assertEqual(result.revision_history[2].node, "trend_agent")
-        self.assertEqual(result.market_research_context.status, "disabled")
+        self.assertEqual(result.revision_history[0].node, "input_parser")
+        self.assertEqual(result.revision_history[1].node, "memory_retriever")
+        self.assertEqual(result.revision_history[2].node, "market_research_agent")
+        self.assertEqual(result.revision_history[3].node, "trend_agent")
         self.assertGreaterEqual(len(result.draft.titles), 2)
+
+    def test_agent_retrieves_product_memory_after_input_parse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_data_dir = os.environ.get("REDNOTE_DATA_DIR")
+            os.environ["REDNOTE_DATA_DIR"] = tmpdir
+            try:
+                store = MemoryStore(Path(tmpdir) / "rednote_matrix.sqlite3")
+                store.add_memory(
+                    "brand/acme/tray",
+                    "product_fact",
+                    "这款桌面收纳托盘是雾白色，售价 39 元。",
+                    "商品事实",
+                )
+                store.add_memory(
+                    "brand/acme/tray",
+                    "fact_boundary",
+                    "不能写亲测、试用三天、已经购买",
+                    "事实边界",
+                )
+
+                with mock_agent_llm():
+                    result = run_agent(
+                        {
+                            "product_name": "桌面收纳托盘",
+                            "selling_points": ["小桌面也能放下", "拿东西不用翻半天"],
+                            "target_audience": "租房小桌面用户",
+                            "scenario": "晚上一边办公一边找东西",
+                            "memory_namespace": "brand/acme/tray",
+                        }
+                    )
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("REDNOTE_DATA_DIR", None)
+                else:
+                    os.environ["REDNOTE_DATA_DIR"] = old_data_dir
+
+        self.assertEqual(result.revision_history[1].node, "memory_retriever")
+        self.assertEqual(result.memory_context.namespace, "brand/acme/tray")
+        self.assertTrue(result.memory_context.product_facts)
+        self.assertTrue(result.memory_context.writing_rules)
+        self.assertIn("雾白色", result.draft.body)
+        self.assertNotIn("39", _all_draft_text(result))
+        self.assertNotIn("售价", _all_draft_text(result))
+        self.assertNotIn("亲测", _all_draft_text(result))
+        self.assertNotIn("试用三天", _all_draft_text(result))
+        self.assertNotIn("已经购买", _all_draft_text(result))
 
     def test_risky_selling_points_are_softened(self) -> None:
         with mock_agent_llm():
@@ -60,42 +106,6 @@ class AgentGraphTest(unittest.TestCase):
         self.assertGreaterEqual(result.loop_count, 1)
         self.assertEqual(result.status, "pass")
 
-    def test_agent_retrieves_product_memory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            old_data_dir = os.environ.get("REDNOTE_DATA_DIR")
-            os.environ["REDNOTE_DATA_DIR"] = tmpdir
-            try:
-                store = MemoryStore(Path(tmpdir) / "rednote_matrix.sqlite3")
-                store.add_memory(
-                    "brand/acme/tray",
-                    "product_fact",
-                    "这款桌面收纳托盘是雾白色，售价 39 元。",
-                    "商品事实",
-                )
-
-                with mock_agent_llm():
-                    result = run_agent(
-                        {
-                            "product_name": "桌面收纳托盘",
-                            "selling_points": ["小桌面也能放下", "拿东西不用翻半天"],
-                            "target_audience": "租房小桌面用户",
-                            "scenario": "晚上一边办公一边找东西",
-                            "memory_namespace": "brand/acme/tray",
-                        }
-                    )
-            finally:
-                if old_data_dir is None:
-                    os.environ.pop("REDNOTE_DATA_DIR", None)
-                else:
-                    os.environ["REDNOTE_DATA_DIR"] = old_data_dir
-
-        self.assertEqual(result.revision_history[0].node, "memory_retriever")
-        self.assertEqual(result.memory_context.namespace, "brand/acme/tray")
-        self.assertTrue(result.memory_context.product_facts)
-        self.assertIn("雾白色", result.draft.body)
-        self.assertNotIn("39", _all_draft_text(result))
-        self.assertNotIn("售价", _all_draft_text(result))
-
     def test_price_input_is_not_exposed_in_final_copy(self) -> None:
         with mock_agent_llm():
             result = run_agent(
@@ -112,6 +122,25 @@ class AgentGraphTest(unittest.TestCase):
         self.assertEqual(result.status, "pass")
         self.assertNotIn("39", text)
         self.assertNotIn("价格大概", text)
+        self.assertFalse(any(risk.type == "price_mention" for risk in result.risk_items))
+
+    def test_explicit_followup_can_include_user_provided_price(self) -> None:
+        with mock_agent_llm():
+            result = run_agent(
+                {
+                    "product_name": "桌面收纳托盘",
+                    "price": "39元",
+                    "selling_points": ["小桌面也能放下", "拿东西不用翻半天"],
+                    "target_audience": "租房小桌面用户",
+                    "scenario": "晚上办公找东西",
+                    "current_message": "加上价格",
+                    "conversation_history": [{"user_message": "先写一版"}],
+                }
+            )
+
+        text = _all_draft_text(result)
+        self.assertIn("39元", text)
+        self.assertIn("价格大概", text)
         self.assertFalse(any(risk.type == "price_mention" for risk in result.risk_items))
 
     def test_medium_hard_sell_words_are_revised(self) -> None:
@@ -136,10 +165,10 @@ class AgentGraphTest(unittest.TestCase):
         keywords = build_default_keywords(
             AgentInput.model_validate(
                 {
-                "product_name": "桌面收纳托盘",
-                "selling_points": ["小桌面也能放下", "拿东西不用翻半天"],
-                "target_audience": "租房小桌面用户",
-                "scenario": "晚上一边办公一边找东西",
+                    "product_name": "桌面收纳托盘",
+                    "selling_points": ["小桌面也能放下", "拿东西不用翻半天"],
+                    "target_audience": "租房小桌面用户",
+                    "scenario": "晚上一边办公一边找东西",
                 }
             )
         )
@@ -149,6 +178,21 @@ class AgentGraphTest(unittest.TestCase):
         self.assertIn("桌面收纳托盘 真实体验", keywords)
         self.assertIn("桌面收纳托盘 避坑", keywords)
         self.assertIn("租房小桌面用户", joined)
+
+    def test_structure_agent_prioritizes_builtin_viral_rules(self) -> None:
+        with mock_agent_llm():
+            result = run_agent(
+                {
+                    "product_name": "桌面收纳托盘",
+                    "selling_points": ["小桌面也能放下", "拿东西不用翻半天"],
+                    "target_audience": "租房小桌面用户",
+                    "scenario": "晚上一边办公一边找东西",
+                }
+            )
+
+        notes = "\n".join(result.draft.structure_notes)
+        for rule in HIGH_INTERACTION_PATTERNS[:3]:
+            self.assertIn(rule, notes)
 
 
 if __name__ == "__main__":

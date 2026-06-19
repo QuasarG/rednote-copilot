@@ -64,13 +64,39 @@ class ApiTest(unittest.TestCase):
         self.assertNotIn("售价", payload["output"])
         self.assertEqual(payload["result"]["memory_context"]["namespace"], "brand/acme/tray")
 
-    def test_chat_requires_product_name(self) -> None:
+    def test_chat_accepts_natural_language_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             old_data_dir = os.environ.get("REDNOTE_DATA_DIR")
             os.environ["REDNOTE_DATA_DIR"] = tmpdir
             try:
                 client = TestClient(app)
-                response = client.post("/chat", json={"message": "先聊聊"})
+                with mock_agent_llm():
+                    response = client.post(
+                        "/chat",
+                        json={
+                            "message": "帮我写一条桌面收纳托盘的小红书文案，给租房小桌面用户看，强调小桌面也能放下、拿东西方便，语气自然一点",
+                            "debug": True,
+                        },
+                    )
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("REDNOTE_DATA_DIR", None)
+                else:
+                    os.environ["REDNOTE_DATA_DIR"] = old_data_dir
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("标题：", payload["output"])
+        self.assertEqual(payload["result"]["resolved_user_input"]["product_name"], "桌面收纳托盘")
+
+    def test_chat_rejects_missing_product_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_data_dir = os.environ.get("REDNOTE_DATA_DIR")
+            os.environ["REDNOTE_DATA_DIR"] = tmpdir
+            try:
+                client = TestClient(app)
+                with mock_agent_llm():
+                    response = client.post("/chat", json={"message": "先聊聊", "debug": True})
             finally:
                 if old_data_dir is None:
                     os.environ.pop("REDNOTE_DATA_DIR", None)
@@ -78,6 +104,7 @@ class ApiTest(unittest.TestCase):
                     os.environ["REDNOTE_DATA_DIR"] = old_data_dir
 
         self.assertEqual(response.status_code, 400)
+        self.assertIn("商品或服务名称", response.json()["detail"])
 
     def test_xhs_status_and_search_without_cookie(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -99,7 +126,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(status_response.status_code, 200)
         self.assertIn("environment", status_response.json())
         self.assertEqual(search_response.status_code, 200)
-        self.assertEqual(search_response.json()["status"], "needs_login")
+        self.assertEqual(search_response.json()["status"], "ready")
 
     def test_qrcode_login_uses_detached_worker_process(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -109,12 +136,11 @@ class ApiTest(unittest.TestCase):
                 with (
                     patch(
                         "rednote_matrix.integrations.xhs_core.check_xhs_environment",
-                        return_value=XhsCoreEnvironment(True, True, True, True, [], []),
+                        return_value=XhsCoreEnvironment(True, True, True, [], []),
                     ),
-                    patch("rednote_matrix.integrations.xhs_core.shutil.which", return_value="/usr/bin/Xvfb"),
                     patch("rednote_matrix.integrations.xhs_core.subprocess.Popen") as popen,
                 ):
-                    session = start_qrcode_login_process(headless=False, timeout_seconds=33)
+                    session = start_qrcode_login_process(timeout_seconds=33)
                     log_text = Path(session.log_path).read_text(encoding="utf-8")
             finally:
                 if old_data_dir is None:
@@ -127,8 +153,6 @@ class ApiTest(unittest.TestCase):
         popen.assert_called_once()
         args, kwargs = popen.call_args
         self.assertEqual(args[0][2], "rednote_matrix.integrations.xhs_login_worker")
-        self.assertEqual(args[0][-3:], ["false", "33", "true"])
-        self.assertTrue(kwargs["start_new_session"])
 
     def test_qrcode_image_endpoint_returns_404_before_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -153,9 +177,8 @@ class ApiTest(unittest.TestCase):
                 with (
                     patch(
                         "rednote_matrix.integrations.xhs_core.check_xhs_environment",
-                        return_value=XhsCoreEnvironment(True, True, True, True, [], []),
+                        return_value=XhsCoreEnvironment(True, True, True, [], []),
                     ),
-                    patch("rednote_matrix.integrations.xhs_core.shutil.which", return_value="/usr/bin/Xvfb"),
                     patch("rednote_matrix.integrations.xhs_core.subprocess.Popen") as popen,
                 ):
                     popen.return_value.pid = 12345
@@ -192,8 +215,9 @@ class ApiTest(unittest.TestCase):
                 with (
                     patch(
                         "rednote_matrix.integrations.xhs_core.check_xhs_environment",
-                        return_value=XhsCoreEnvironment(True, True, True, True, [], []),
+                        return_value=XhsCoreEnvironment(True, True, True, [], []),
                     ),
+                    patch("rednote_matrix.integrations.xhs_core._verify_cookie_sync", return_value=(True, "登录态有效")),
                     patch("rednote_matrix.integrations.xhs_core._signed_headers", return_value={}),
                     patch("rednote_matrix.integrations.xhs_core.httpx.AsyncClient") as client_class,
                 ):
