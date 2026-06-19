@@ -45,9 +45,18 @@ RedNote Copilot 不是“一键生成小红书文案”的普通聊天工具，�
 | 文案结构缺失 | 用户反复讨论标题、开头、框架和节奏 | 双标题、场景钩子、正文结构生成 |
 | AI 味与信任问题 | 频率不如流量焦虑高，但影响内容可信度 | 真人网感改写、弱化模板化表达 |
 
-<p align="center">
-  <img src="docs/assets/need-theme-counts.png" alt="小红书运营痛点主题分布" width="760">
-</p>
+<table align="center">
+  <tr>
+    <td align="center">
+      <img src="docs/assets/need-theme-counts.png" alt="小红书运营痛点主题分布" width="460"><br>
+      <sub>图 1. 小红书运营痛点主题分布</sub>
+    </td>
+    <td align="center">
+      <img src="docs/assets/wordcloud.png" alt="运营讨论关键词云" width="460"><br>
+      <sub>图 2. 运营讨论关键词云</sub>
+    </td>
+  </tr>
+</table>
 
 核心数据摘要：
 

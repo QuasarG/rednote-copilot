@@ -73,9 +73,18 @@ This means the product argument should be framed carefully:
 - AI-specific complaints are sparse, so "anti-AI feeling" should be positioned as a quality and trust layer, not as the highest-frequency pain point.
 - The strongest product need is a workflow: **structured generation -> humanized rewrite -> compliance scan -> revision**, which a one-shot chat model does not provide.
 
-<p align="center">
-  <img src="docs/assets/need-theme-counts.png" alt="Theme distribution of Xiaohongshu operation pain points" width="760">
-</p>
+<table align="center">
+  <tr>
+    <td align="center">
+      <img src="docs/assets/need-theme-counts.png" alt="Theme distribution of Xiaohongshu operation pain points" width="460"><br>
+      <sub>Figure 1. Theme distribution of Xiaohongshu operation pain points</sub>
+    </td>
+    <td align="center">
+      <img src="docs/assets/wordcloud.png" alt="Word cloud of operation discussion keywords" width="460"><br>
+      <sub>Figure 2. Word cloud of operation discussion keywords</sub>
+    </td>
+  </tr>
+</table>
 
 Research summary:
 
