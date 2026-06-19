@@ -56,9 +56,7 @@ def create_app() -> Flask:
     def ui_xhs_login_qrcode() -> Response:
         payload = request.get_json(silent=True) or {}
         session = start_qrcode_login_process(
-            headless=False,
             timeout_seconds=int(payload.get("timeout_seconds") or 240),
-            use_virtual_display=True,
         )
         data = result_to_dict(session)
         data["qrcode_url"] = f"/ui/xhs/login/{session.session_id}/qrcode" if session.session_id else ""
@@ -120,8 +118,15 @@ def _prepare_conversation_payload(payload: dict[str, Any], store: LocalConversat
     message = str(payload.get("message") or "").strip()
     conversation_id = str(payload.get("conversation_id") or "").strip() or None
     changes = payload.get("changes") if isinstance(payload.get("changes"), list) else []
-    agent_patch = {key: value for key, value in payload.items() if key not in {"message", "conversation_id", "changes"}}
     existing_record = store.get(conversation_id or "") if conversation_id else None
+    base_input = _latest_agent_input(existing_record)
+    agent_patch = dict(base_input or {})
+    for key, value in payload.items():
+        if key in {"message", "conversation_id", "changes"}:
+            continue
+        if _should_ignore_empty_followup_value(key, value, base_input):
+            continue
+        agent_patch[key] = value
     agent_patch["current_message"] = message
     agent_patch["current_changes"] = changes
     agent_patch["conversation_history"] = store.history_for_agent(existing_record)
@@ -132,6 +137,40 @@ def _prepare_conversation_payload(payload: dict[str, Any], store: LocalConversat
         changes=changes,
     )
     return {"conversation_id": record["id"], "turn_id": turn_id, "agent_input": agent_patch}
+
+
+def _latest_agent_input(record: dict[str, Any] | None) -> dict[str, Any]:
+    if not record:
+        return {}
+    base = record.get("agent_input") if isinstance(record.get("agent_input"), dict) else {}
+    if _has_product_context(base):
+        return base
+    for turn in reversed(record.get("turns") or []):
+        if turn.get("status") != "completed":
+            continue
+        result_input = ((turn.get("result") or {}).get("resolved_user_input") or {})
+        if _has_product_context(result_input):
+            return result_input
+        turn_input = turn.get("agent_input") or {}
+        if _has_product_context(turn_input):
+            return turn_input
+    return base or {}
+
+
+def _has_product_context(agent_input: dict[str, Any]) -> bool:
+    return any(str(agent_input.get(key) or "").strip() for key in ("product_name", "brand_name", "memory_namespace"))
+
+
+def _should_ignore_empty_followup_value(key: str, value: Any, base_input: dict[str, Any]) -> bool:
+    if not base_input:
+        return False
+    if key in {"enable_realtime_research", "realtime_research_max_notes"}:
+        return False
+    if isinstance(value, str) and not value.strip() and str(base_input.get(key) or "").strip():
+        return True
+    if isinstance(value, list) and not value and base_input.get(key):
+        return True
+    return False
 
 
 def _agent_input_from_payload(payload: dict[str, Any]) -> AgentInput:

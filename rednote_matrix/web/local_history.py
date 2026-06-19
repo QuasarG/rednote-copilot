@@ -119,6 +119,11 @@ class LocalConversationStore:
         turn["result"] = result
         turn["output_parts"] = output_parts_from_result(result)
         turn.setdefault("events", []).append(event)
+        resolved_input = _public_agent_input(result.get("resolved_user_input") or {})
+        if resolved_input:
+            turn["agent_input"] = resolved_input
+            record["agent_input"] = resolved_input
+            record["title"] = _title_from_input(resolved_input, record.get("title", ""))
         record["updated_at"] = timestamp
         self._write(record)
 
@@ -213,7 +218,7 @@ def _public_agent_input(agent_input: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in agent_input.items()
-        if key not in {"conversation_history", "current_changes", "current_message"}
+        if key not in {"conversation_history", "current_changes", "current_message", "raw_user_request"}
     }
 
 

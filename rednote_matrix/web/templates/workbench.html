@@ -14,7 +14,7 @@
       <div class="app-bar-inner">
         <div class="brand">
           <button class="brand-cube" id="historyToggle" type="button" aria-label="打开历史对话">
-            <span></span><span></span><span></span>
+            <img src="{{ url_for('static', filename='rednote-copilot-logo.png') }}" alt="" />
           </button>
           <div>
             <h1>RedNoteMatrix</h1>
@@ -44,65 +44,65 @@
     </aside>
 
     <main class="workspace">
-      <section class="panel panel-context" aria-label="商品背景">
+      <section class="panel panel-context" aria-label="小红书爆款检索">
         <div class="panel-header">
           <div class="panel-title">
-            <span class="icon-badge">BG</span>
-            <span>商品背景</span>
+            <span class="icon-badge">XHS</span>
+            <span>爆款样本</span>
           </div>
-          <button class="btn btn-sm import-button" id="importJsonButton" type="button">
-            <span class="import-icon" aria-hidden="true"></span>
-            <span>导入 JSON</span>
-          </button>
         </div>
 
-        <form class="context-form" id="agentForm">
-          <input id="jsonImportInput" type="file" accept="application/json,.json" hidden />
-          <div class="field-row">
-            <label class="field">
-              <span class="field-label">商品 / 服务</span>
-              <input name="product_name" required placeholder="例如：桌面收纳托盘" />
-            </label>
-            <label class="field">
-              <span class="field-label">品牌</span>
-              <input name="brand_name" placeholder="例如：Acme Home" />
-            </label>
-            <label class="field">
-              <span class="field-label">价格信息</span>
-              <input name="price" placeholder="仅供内部判断" />
-            </label>
+        <form class="context-form crawl-workbench" id="agentForm">
+          <div class="context-hidden-fields" aria-hidden="true">
+            <input name="product_name" />
+            <input name="brand_name" />
+            <input name="price" />
+            <input name="target_audience" />
+            <input name="scenario" />
+            <input name="tone" value="自然、可信、轻种草" />
+            <textarea name="selling_points"></textarea>
+            <textarea name="forbidden_words"></textarea>
+            <input id="realtimeToggle" name="enable_realtime_research" type="checkbox" checked />
           </div>
-          <div class="field-row">
-            <label class="field">
-              <span class="field-label">目标人群</span>
-              <input name="target_audience" placeholder="例如：租房小桌面用户" />
-            </label>
-            <label class="field">
-              <span class="field-label">使用场景</span>
-              <input name="scenario" placeholder="例如：晚上办公找东西" />
-            </label>
-            <label class="field">
-              <span class="field-label">常用语气</span>
-              <input name="tone" value="自然、可信、轻种草" />
-            </label>
-          </div>
-          <label class="field">
-            <span class="field-label">核心卖点</span>
-            <textarea name="selling_points" rows="2" placeholder="一行一个卖点"></textarea>
-          </label>
-          <label class="field">
-            <span class="field-label">禁用词</span>
-            <textarea name="forbidden_words" rows="2" placeholder="一行一个禁用词，可选"></textarea>
-          </label>
-          <div class="composer-foot">
-            <label class="toggle">
-              <input id="realtimeToggle" name="enable_realtime_research" type="checkbox" />
-              <span class="toggle-track"></span>
+
+          <div class="crawl-control-card">
+            <label class="crawl-limit">
               <div>
-                <strong>MediaCrawler Node</strong>
-                <small>开启实时爆款检索；遇到 461 自动降级</small>
+                <strong>检索条数</strong>
+                <small>默认抓高互动候选，最多 30 条</small>
               </div>
+              <input id="crawlLimitInput" name="realtime_research_max_notes" type="number" min="1" max="30" value="20" />
             </label>
+            <button class="btn btn-sm crawl-stop-button" id="skipCrawlerButton" type="button">
+              终止爬取进入生成
+            </button>
+          </div>
+
+          <div class="crawler-list" id="crawlerNoteList" aria-live="polite">
+            <div class="crawler-empty">等待 MediaCrawler 返回爆款样本。</div>
+          </div>
+
+          <div class="crawler-status-panel">
+            <div class="status-grid">
+              <div class="status-tile">
+                <span>登录状态</span>
+                <strong id="xhsAuthState">Checking</strong>
+              </div>
+              <div class="status-tile">
+                <span>Chrome</span>
+                <strong id="chromeState">Checking</strong>
+              </div>
+              <div class="status-tile">
+                <span>已抓取</span>
+                <strong id="crawlerCountState">0 条</strong>
+              </div>
+            </div>
+            <div class="insight-panel">
+              <strong>可总结经验</strong>
+              <div class="insight-list" id="crawlerInsightList">
+                <span>还没有样本，先让 Agent 跑起来。</span>
+              </div>
+            </div>
           </div>
         </form>
       </section>
@@ -127,12 +127,20 @@
         </div>
 
         <div class="chat-composer">
-          <textarea
-            form="agentForm"
-            name="custom_prompt"
-            rows="1"
-            placeholder="补充人设、风格、禁忌，或直接说你想要什么文案"
-          ></textarea>
+          <div class="composer-input-shell">
+            <button
+              class="composer-resize-handle"
+              id="composerResizeHandle"
+              type="button"
+              aria-label="拖拽调整输入框高度"
+            ></button>
+            <textarea
+              form="agentForm"
+              name="custom_prompt"
+              rows="1"
+              placeholder="补充人设、风格、禁忌，或直接说你想要什么文案"
+            ></textarea>
+          </div>
           <button class="btn btn-primary" id="submitButton" form="agentForm" type="submit">
             <span class="btn-label-full">运行 Agent</span>
             <span class="btn-label-compact" aria-hidden="true">↑</span>
@@ -184,6 +192,25 @@
         </div>
       </section>
     </main>
+
+    <div class="login-gate" id="loginGate" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="loginGateTitle">
+      <div class="login-gate-card">
+        <div class="login-gate-head">
+          <span class="icon-badge">XHS</span>
+          <div>
+            <strong id="loginGateTitle">小红书登录</strong>
+            <small>登录完成后自动继续运行 Agent</small>
+          </div>
+        </div>
+        <p>请在弹出的chrome窗口中登录小红书账号</p>
+        <div class="login-countdown" aria-live="polite">
+          <strong id="loginCountdown">120</strong>
+          <span>s</span>
+        </div>
+        <div class="login-gate-status" id="loginGateStatus">正在打开 Chrome 登录窗口...</div>
+      </div>
+    </div>
+
     <script src="{{ url_for('static', filename='workbench.js') }}"></script>
   </body>
 </html>

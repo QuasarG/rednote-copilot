@@ -6,9 +6,14 @@ const bodyOutput = document.querySelector("#bodyOutput");
 const tagOutput = document.querySelector("#tagOutput");
 const promptInput = document.querySelector('.chat-composer textarea[name="custom_prompt"]');
 const agentForm = document.querySelector("#agentForm");
-const importJsonButton = document.querySelector("#importJsonButton");
-const jsonImportInput = document.querySelector("#jsonImportInput");
 const chatComposer = document.querySelector(".chat-composer");
+const crawlLimitInput = document.querySelector("#crawlLimitInput");
+const crawlerNoteList = document.querySelector("#crawlerNoteList");
+const skipCrawlerButton = document.querySelector("#skipCrawlerButton");
+const xhsAuthState = document.querySelector("#xhsAuthState");
+const chromeState = document.querySelector("#chromeState");
+const crawlerCountState = document.querySelector("#crawlerCountState");
+const crawlerInsightList = document.querySelector("#crawlerInsightList");
 const submitButtonLabel = submitButton.querySelector(".btn-label-full");
 const submitButtonCompactLabel = submitButton.querySelector(".btn-label-compact");
 const historyToggle = document.querySelector("#historyToggle");
@@ -16,7 +21,15 @@ const historyClose = document.querySelector("#historyClose");
 const historyDrawer = document.querySelector("#historyDrawer");
 const historyList = document.querySelector("#historyList");
 const newConversationButton = document.querySelector("#newConversationButton");
+const loginGate = document.querySelector("#loginGate");
+const loginCountdown = document.querySelector("#loginCountdown");
+const loginGateStatus = document.querySelector("#loginGateStatus");
+const composerResizeHandle = document.querySelector("#composerResizeHandle");
+const composerInputShell = document.querySelector(".composer-input-shell");
+const PROMPT_INPUT_MIN_HEIGHT = 44;
 const PROMPT_INPUT_MAX_HEIGHT = 180;
+const LOGIN_GATE_SECONDS = 120;
+const LOGIN_WORKER_TIMEOUT_SECONDS = 900;
 
 let activeAgentMessage = null;
 let outputParts = { titles: "", body: "", tags: "" };
@@ -25,6 +38,16 @@ let isRunning = false;
 let conversationId = "";
 let lastSubmittedPayload = null;
 let latestResult = null;
+let activeStreamController = null;
+let currentRunPayload = null;
+let crawlerBypassRequested = false;
+let crawlerNotes = [];
+let crawlerRenderVersion = 0;
+let activeNodeRows = new Map();
+let isLoginPending = false;
+let latestWorkbenchStatus = null;
+let loginCountdownTimer = null;
+let userPromptHeight = PROMPT_INPUT_MIN_HEIGHT;
 
 initTypewriters();
 syncSubmitAvailability();
@@ -35,13 +58,31 @@ agentForm.addEventListener("submit", async (event) => {
   const payload = formToPayload(event.currentTarget);
   const userMessage = promptInput.value.trim();
   const changes = diffPayload(lastSubmittedPayload, payload);
-  if (isRunning || (hasSubmittedOnce && !userMessage && changes.length === 0)) {
+  if (isRunning || isLoginPending) {
+    return;
+  }
+  if (!hasRunnableRequest(payload)) {
+    syncSubmitAvailability();
+    return;
+  }
+  if (hasSubmittedOnce && !userMessage && changes.length === 0) {
     return;
   }
   payload.message = userMessage;
   payload.conversation_id = conversationId;
   payload.changes = changes;
-  resetRun();
+  if (payload.enable_realtime_research) {
+    const loginReady = await ensureXhsLoginBeforeRun();
+    if (!loginReady) {
+      syncSubmitAvailability();
+      return;
+    }
+  }
+  await runSubmittedPayload(payload, userMessage, changes);
+});
+
+async function runSubmittedPayload(payload, userMessage, changes) {
+  resetRun({ preserveCrawler: hasSubmittedOnce });
   appendUserTurn(userMessage, payload, changes);
   activeAgentMessage = appendAgentEventMessage();
   hasSubmittedOnce = true;
@@ -58,17 +99,31 @@ agentForm.addEventListener("submit", async (event) => {
 
   try {
     await streamAgent(payload);
+  } catch (error) {
+    if (error.name === "AbortError" && crawlerBypassRequested) {
+      crawlerBypassRequested = false;
+      try {
+        await streamCrawlerBypassRun();
+      } catch (bypassError) {
+        handleEvent({ type: "error", message: bypassError.message || String(bypassError) });
+      }
+    } else if (error.name !== "AbortError") {
+      handleEvent({ type: "error", message: error.message || String(error) });
+    }
   } finally {
     isRunning = false;
+    crawlerBypassRequested = false;
+    activeStreamController = null;
+    currentRunPayload = null;
     submitButton.disabled = false;
+    if (skipCrawlerButton) {
+      skipCrawlerButton.disabled = false;
+      skipCrawlerButton.textContent = "终止爬取进入生成";
+    }
     setSubmitButtonState("idle");
     syncSubmitAvailability();
   }
-});
-
-importJsonButton.addEventListener("click", () => {
-  jsonImportInput.click();
-});
+}
 
 historyToggle.addEventListener("click", async () => {
   historyDrawer.classList.add("is-open");
@@ -89,25 +144,30 @@ newConversationButton.addEventListener("click", () => {
   closeHistoryDrawer();
 });
 
-jsonImportInput.addEventListener("change", async () => {
-  const file = jsonImportInput.files?.[0];
-  if (!file) return;
-  try {
-    const data = JSON.parse(await file.text());
-    applyImportedJson(data);
-    markImportLoaded(file.name);
-    appendMessage("assistant", "JSON Imported", `已导入 ${file.name}，商品背景已自动解析。`);
-  } catch (error) {
-    appendMessage("assistant", "JSON Import Failed", `导入失败：${error.message}`);
-  } finally {
-    jsonImportInput.value = "";
-  }
-});
+if (skipCrawlerButton) {
+  skipCrawlerButton.addEventListener("click", async () => {
+    if (isRunning && activeStreamController && currentRunPayload?.enable_realtime_research) {
+      crawlerBypassRequested = true;
+      skipCrawlerButton.disabled = true;
+      skipCrawlerButton.textContent = "正在进入生成";
+      activeStreamController.abort();
+      return;
+    }
+    agentForm.enable_realtime_research.checked = false;
+    skipCrawlerButton.textContent = "本轮已跳过爬取";
+    updateCrawlerInsights(["已关闭实时爬取，本轮将使用项目内置爆款方法论生成。"]);
+    syncSubmitAvailability();
+  });
+}
 
 promptInput.addEventListener("input", () => {
   growPromptInput();
   syncSubmitAvailability();
 });
+
+if (composerResizeHandle) {
+  composerResizeHandle.addEventListener("pointerdown", startComposerResize);
+}
 
 agentForm.addEventListener("input", (event) => {
   if (event.target === promptInput) return;
@@ -147,42 +207,23 @@ document.querySelectorAll("[data-copy-target]").forEach((button) => {
 function formToPayload(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   data.enable_realtime_research = form.enable_realtime_research.checked;
-  data.realtime_research_keywords = data.enable_realtime_research
-    ? `${data.product_name} 爆款笔记\n${data.product_name} 真实体验\n${data.product_name} 避坑`
+  const productName = String(data.product_name || "").trim();
+  data.realtime_research_keywords = data.enable_realtime_research && productName
+    ? `${productName} 爆款笔记\n${productName} 真实体验\n${productName} 避坑`
     : "";
-  data.realtime_research_max_notes = 6;
-  data.memory_namespace = data.brand_name || data.product_name;
+  data.realtime_research_max_notes = clampNumber(crawlLimitInput?.value, 1, 30, 20);
+  data.memory_namespace = data.brand_name || productName;
   return data;
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number.parseInt(value, 10);
+  if (Number.isNaN(number)) return fallback;
+  return Math.max(min, Math.min(max, number));
 }
 
 function clonePayload(payload) {
   return JSON.parse(JSON.stringify(payload));
-}
-
-function applyImportedJson(data) {
-  const values = data.agent_input && typeof data.agent_input === "object" ? data.agent_input : data;
-  const fieldNames = [
-    "product_name",
-    "brand_name",
-    "price",
-    "target_audience",
-    "scenario",
-    "tone",
-    "custom_prompt",
-    "memory_namespace",
-  ];
-  fieldNames.forEach((name) => {
-    setFormValue(name, values[name]);
-  });
-  setFormValue("selling_points", listToLines(values.selling_points));
-  setFormValue("forbidden_words", listToLines(values.forbidden_words));
-  if (values.enable_realtime_research !== undefined) {
-    agentForm.enable_realtime_research.checked = Boolean(values.enable_realtime_research);
-  }
-  if (promptInput) {
-    growPromptInput();
-  }
-  syncSubmitAvailability();
 }
 
 function setFormValue(name, value) {
@@ -199,17 +240,6 @@ function listToLines(value) {
   return value === undefined || value === null ? "" : String(value);
 }
 
-function markImportLoaded(filename) {
-  const label = importJsonButton.querySelector("span:last-child");
-  const oldText = label.textContent;
-  importJsonButton.classList.add("is-loaded");
-  label.textContent = "已导入";
-  setTimeout(() => {
-    importJsonButton.classList.remove("is-loaded");
-    label.textContent = oldText || "导入 JSON";
-  }, 1400);
-}
-
 function setSubmitButtonState(state) {
   if (!submitButtonLabel || !submitButtonCompactLabel) return;
   if (state === "running") {
@@ -224,22 +254,56 @@ function setSubmitButtonState(state) {
 }
 
 function growPromptInput() {
-  if (!promptInput.value.trim()) {
-    resetPromptInputHeight();
-    return;
-  }
-  const nextHeight = Math.min(promptInput.scrollHeight, PROMPT_INPUT_MAX_HEIGHT);
-  if (nextHeight > promptInput.clientHeight + 2) {
-    promptInput.style.height = `${nextHeight}px`;
+  const nextHeight = clampNumber(promptInput.scrollHeight, PROMPT_INPUT_MIN_HEIGHT, PROMPT_INPUT_MAX_HEIGHT, PROMPT_INPUT_MIN_HEIGHT);
+  if (nextHeight > userPromptHeight + 2) {
+    setPromptInputHeight(nextHeight);
   }
 }
 
 function resetPromptInputHeight() {
-  promptInput.style.height = "";
+  setPromptInputHeight(PROMPT_INPUT_MIN_HEIGHT);
+}
+
+function setPromptInputHeight(height) {
+  userPromptHeight = clampNumber(height, PROMPT_INPUT_MIN_HEIGHT, PROMPT_INPUT_MAX_HEIGHT, PROMPT_INPUT_MIN_HEIGHT);
+  promptInput.style.height = `${userPromptHeight}px`;
+  if (composerInputShell) {
+    composerInputShell.style.height = `${userPromptHeight}px`;
+  }
+}
+
+function startComposerResize(event) {
+  event.preventDefault();
+  const startY = event.clientY;
+  const startHeight = promptInput.getBoundingClientRect().height || userPromptHeight;
+  composerResizeHandle.setPointerCapture?.(event.pointerId);
+  chatComposer.classList.add("is-resizing");
+
+  const onMove = (moveEvent) => {
+    const delta = startY - moveEvent.clientY;
+    setPromptInputHeight(startHeight + delta);
+  };
+  const onEnd = () => {
+    chatComposer.classList.remove("is-resizing");
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onEnd);
+    window.removeEventListener("pointercancel", onEnd);
+  };
+
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onEnd);
+  window.addEventListener("pointercancel", onEnd);
 }
 
 function syncSubmitAvailability() {
-  if (isRunning) {
+  if (isRunning || isLoginPending) {
+    submitButton.disabled = true;
+    return;
+  }
+  const payload = formToPayload(agentForm);
+  const hasPrompt = Boolean(promptInput.value.trim());
+  const hasRequest = hasRunnableRequest(payload);
+  if (!hasRequest) {
     submitButton.disabled = true;
     return;
   }
@@ -247,15 +311,27 @@ function syncSubmitAvailability() {
     submitButton.disabled = false;
     return;
   }
-  const payload = formToPayload(agentForm);
-  const hasPrompt = Boolean(promptInput.value.trim());
   const hasChanges = diffPayload(lastSubmittedPayload, payload).length > 0;
   submitButton.disabled = !hasPrompt && !hasChanges;
 }
 
+function hasRunnableRequest(payload) {
+  const promptText = String(promptInput.value || payload.custom_prompt || "").trim();
+  if (promptText) return true;
+  return [
+    payload.product_name,
+    payload.brand_name,
+    payload.target_audience,
+    payload.scenario,
+    payload.selling_points,
+    payload.forbidden_words,
+    payload.price,
+  ].some((value) => String(value || "").trim());
+}
+
 function summaryFromPayload(payload) {
   const lines = [
-    `商品：${payload.product_name}`,
+    payload.product_name ? `商品：${payload.product_name}` : "",
     payload.brand_name ? `品牌：${payload.brand_name}` : "",
     payload.target_audience ? `人群：${payload.target_audience}` : "",
     payload.scenario ? `场景：${payload.scenario}` : "",
@@ -265,10 +341,14 @@ function summaryFromPayload(payload) {
 }
 
 async function streamAgent(payload) {
+  currentRunPayload = clonePayload(payload);
+  const controller = new AbortController();
+  activeStreamController = controller;
   const response = await fetch("/ui/agent/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal: controller.signal,
   });
   if (!response.ok || !response.body) {
     throw new Error(`Agent 请求失败：${response.status}`);
@@ -294,6 +374,21 @@ async function streamAgent(payload) {
   if (!finished) {
     handleEvent({ type: "error", message: "连接已结束，但没有收到最终结果。请检查 LLM 配置或稍后重试。" });
   }
+  activeStreamController = null;
+}
+
+async function streamCrawlerBypassRun() {
+  if (!currentRunPayload) return;
+  const nextPayload = clonePayload(currentRunPayload);
+  nextPayload.enable_realtime_research = false;
+  nextPayload.realtime_research_keywords = "";
+  nextPayload.realtime_research_max_notes = 0;
+  nextPayload.changes = [
+    ...(Array.isArray(nextPayload.changes) ? nextPayload.changes : []),
+    { key: "enable_realtime_research", before: "开启", after: "关闭" },
+  ];
+  addAgentEvent("decision", "终止爆款检索", "已停止当前检索请求，改用已有样本和内置爆款规则继续生成");
+  await streamAgent(nextPayload);
 }
 
 function handleEvent(event) {
@@ -306,6 +401,10 @@ function handleEvent(event) {
   }
   if (event.type === "node") {
     updateNodeEvent(event);
+    return;
+  }
+  if (event.type === "market_note") {
+    appendCrawlerNote(event.note || {}, event.index || crawlerNotes.length + 1);
     return;
   }
   if (event.type === "result") {
@@ -323,14 +422,14 @@ function handleEvent(event) {
 }
 
 function updateNodeEvent(event) {
-  if (event.status === "running") {
-    addAgentEvent("pending", event.label, event.message || "处理中");
-  } else {
-    addAgentEvent("done", event.label, event.message || "已完成");
+  upsertAgentNodeEvent(event);
+  if (event.node === "market_research_agent") {
+    updateCrawlerNode(event);
   }
 }
 
 function renderDraft(result) {
+  renderCrawlerFromResult(result);
   const draft = result.draft || {};
   const titles = draft.titles || [];
   const body = draft.body || "";
@@ -359,6 +458,174 @@ function renderOutputParts(parts) {
     .map((tag) => `<span class="tag-pill">${escapeHtml(tag)}</span>`)
     .join("");
   outputState.textContent = "ready";
+}
+
+function updateCrawlerNode(event) {
+  const payload = event.payload || {};
+  if (event.status === "running") {
+    setCrawlerStatusText(crawlerCountState, "检索中");
+    updateCrawlerInsights(["MediaCrawler 正在检索高互动笔记，返回后会按互动强度排序。"]);
+    return;
+  }
+  mergeCrawlerNotes(payload.notes || []);
+  const status = payload.status || "unknown";
+  const count = Array.isArray(payload.notes) ? payload.notes.length : Number(payload.metric || 0);
+  setCrawlerStatusText(crawlerCountState, `${count} 条`);
+  updateCrawlerInsights(buildCrawlerInsights(payload.notes || [], status, payload.message || event.message));
+}
+
+function renderCrawlerFromResult(result) {
+  const context = result?.market_research_context || {};
+  mergeCrawlerNotes(context.notes || []);
+  if (context.status || context.message) {
+    updateCrawlerInsights(buildCrawlerInsights(context.notes || [], context.status, context.message));
+  }
+}
+
+function resetCrawlerPanel() {
+  crawlerNotes = [];
+  crawlerRenderVersion += 1;
+  if (crawlerNoteList) {
+    crawlerNoteList.innerHTML = '<div class="crawler-empty">等待 MediaCrawler 返回爆款样本。</div>';
+  }
+  setCrawlerStatusText(crawlerCountState, "0 条");
+  updateCrawlerInsights(["还没有样本，先让 Agent 跑起来。"]);
+  if (skipCrawlerButton) {
+    skipCrawlerButton.disabled = false;
+    skipCrawlerButton.textContent = "终止爬取进入生成";
+  }
+}
+
+function renderCrawlerNotes(notes) {
+  if (!crawlerNoteList || !Array.isArray(notes)) return;
+  const renderVersion = ++crawlerRenderVersion;
+  const cleanNotes = notes.filter((note) => note && (note.title || note.note_url));
+  crawlerNotes = cleanNotes;
+  crawlerNoteList.innerHTML = "";
+  if (cleanNotes.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "crawler-empty";
+    empty.textContent = "本轮没有拿到可展示的爆款样本。";
+    crawlerNoteList.append(empty);
+    setCrawlerStatusText(crawlerCountState, "0 条");
+    return;
+  }
+  cleanNotes.forEach((note, index) => {
+    window.setTimeout(() => {
+      if (renderVersion !== crawlerRenderVersion) return;
+      crawlerNoteList.append(createCrawlerNoteCard(note, index));
+      crawlerNoteList.scrollTop = crawlerNoteList.scrollHeight;
+    }, Math.min(index * 48, 620));
+  });
+  setCrawlerStatusText(crawlerCountState, `${cleanNotes.length} 条`);
+}
+
+function mergeCrawlerNotes(notes) {
+  if (!Array.isArray(notes)) return;
+  notes.forEach((note) => appendCrawlerNote(note, crawlerNotes.length + 1));
+}
+
+function appendCrawlerNote(note, index) {
+  if (!crawlerNoteList || !note || (!note.title && !note.note_url)) return;
+  const key = crawlerNoteKey(note);
+  if (crawlerNotes.some((item) => crawlerNoteKey(item) === key)) return;
+  crawlerNotes.push(note);
+  const empty = crawlerNoteList.querySelector(".crawler-empty");
+  if (empty) empty.remove();
+  crawlerNoteList.append(createCrawlerNoteCard(note, index));
+  crawlerNoteList.scrollTop = crawlerNoteList.scrollHeight;
+  setCrawlerStatusText(crawlerCountState, `${crawlerNotes.length} 条`);
+  updateCrawlerInsights(buildCrawlerInsights(crawlerNotes, "completed", ""));
+}
+
+function crawlerNoteKey(note) {
+  return String(note.note_url || note.title || "").trim();
+}
+
+function createCrawlerNoteCard(note, index) {
+  const href = String(note.note_url || "").trim();
+  const element = document.createElement(href ? "a" : "div");
+  element.className = "crawler-note-card";
+  if (href) {
+    element.href = href;
+    element.target = "_blank";
+    element.rel = "noopener noreferrer";
+    element.title = "打开原帖";
+  }
+  const title = document.createElement("div");
+  title.className = "crawler-note-title";
+  title.textContent = note.title || `未命名样本 ${index + 1}`;
+  const metrics = document.createElement("div");
+  metrics.className = "crawler-note-metrics";
+  metrics.innerHTML = `
+    <span>赞 ${escapeHtml(formatMetric(note.liked_count))}</span>
+    <span>评 ${escapeHtml(formatMetric(note.comment_count))}</span>
+    <span>${escapeHtml(note.source_keyword || "搜索样本")}</span>
+  `;
+  element.append(title, metrics);
+  return element;
+}
+
+function formatMetric(value) {
+  const text = String(value || "").trim();
+  return text || "--";
+}
+
+function buildCrawlerInsights(notes, status, message) {
+  const cleanNotes = Array.isArray(notes) ? notes : [];
+  if (status && status !== "completed") {
+    return [message || `检索状态：${status}`];
+  }
+  if (cleanNotes.length === 0) {
+    return [message || "没有拿到实时样本，本轮会回退到项目内置爆款规则。"];
+  }
+  const top = [...cleanNotes].sort((a, b) => metricScore(b) - metricScore(a))[0];
+  const keywordMap = new Map();
+  cleanNotes.forEach((note) => {
+    const keyword = String(note.source_keyword || "").trim();
+    if (keyword) keywordMap.set(keyword, (keywordMap.get(keyword) || 0) + 1);
+  });
+  const hotKeyword = [...keywordMap.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  return [
+    `已拿到 ${cleanNotes.length} 条候选样本，可优先吸收标题里的情绪入口和场景入口。`,
+    top?.title ? `当前最高互动样本：${top.title}` : "",
+    hotKeyword ? `样本集中关键词：${hotKeyword}` : "样本会按点赞和评论强度进入趋势归纳节点。",
+  ].filter(Boolean);
+}
+
+function metricScore(note) {
+  return countToNumber(note?.liked_count) + countToNumber(note?.comment_count) * 1.4;
+}
+
+function countToNumber(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return 0;
+  const number = Number.parseFloat(text.replace(/[,+]/g, ""));
+  if (Number.isNaN(number)) return 0;
+  if (text.includes("w") || text.includes("万")) return number * 10000;
+  if (text.includes("k")) return number * 1000;
+  return number;
+}
+
+function updateCrawlerInsights(items) {
+  if (!crawlerInsightList) return;
+  crawlerInsightList.innerHTML = "";
+  const safeItems = (items || []).filter(Boolean);
+  if (safeItems.length === 0) {
+    const empty = document.createElement("span");
+    empty.textContent = "还没有可总结的样本。";
+    crawlerInsightList.append(empty);
+    return;
+  }
+  safeItems.forEach((item) => {
+    const line = document.createElement("span");
+    line.textContent = item;
+    crawlerInsightList.append(line);
+  });
+}
+
+function setCrawlerStatusText(element, text) {
+  if (element) element.textContent = text;
 }
 
 function markdownLines(lines) {
@@ -531,6 +798,7 @@ function diffPayload(previous, current) {
     "selling_points",
     "forbidden_words",
     "enable_realtime_research",
+    "realtime_research_max_notes",
   ];
   return keys
     .map((key) => ({
@@ -562,6 +830,7 @@ function fieldLabel(key) {
     selling_points: "卖点",
     forbidden_words: "禁用词",
     enable_realtime_research: "MediaCrawler",
+    realtime_research_max_notes: "检索条数",
   };
   return labels[key] || key;
 }
@@ -592,7 +861,7 @@ function addAgentEvent(kind, title, summary) {
   row.className = `event-row event-${kind}`;
   const icon = document.createElement("span");
   icon.className = "event-icon";
-  icon.textContent = kind === "done" ? "✓" : kind === "error" ? "!" : kind === "decision" ? "→" : "…";
+  setEventIcon(icon, kind);
   const body = document.createElement("div");
   body.className = "event-body";
   const strong = document.createElement("strong");
@@ -604,6 +873,47 @@ function addAgentEvent(kind, title, summary) {
   activeAgentMessage.feed.append(row);
   streamPlainTokens(small, summary);
   conversation.scrollTop = conversation.scrollHeight;
+  return row;
+}
+
+function upsertAgentNodeEvent(event) {
+  if (!activeAgentMessage) return;
+  const key = event.node || event.label;
+  let row = activeNodeRows.get(key);
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "event-row event-pending";
+    row.dataset.node = key;
+    const icon = document.createElement("span");
+    icon.className = "event-icon";
+    setEventIcon(icon, "pending");
+    const body = document.createElement("div");
+    body.className = "event-body";
+    const strong = document.createElement("strong");
+    strong.textContent = event.label || key;
+    const small = document.createElement("small");
+    small.className = "typewriter";
+    body.append(strong, small);
+    row.append(icon, body);
+    activeAgentMessage.feed.append(row);
+    activeNodeRows.set(key, row);
+  }
+  const isDone = event.status === "done";
+  row.className = `event-row ${isDone ? "event-done" : "event-pending"}`;
+  setEventIcon(row.querySelector(".event-icon"), isDone ? "done" : "pending");
+  const small = row.querySelector("small");
+  streamPlainTokens(small, event.message || (isDone ? "已完成" : "处理中"));
+  conversation.scrollTop = conversation.scrollHeight;
+}
+
+function setEventIcon(icon, kind) {
+  if (!icon) return;
+  icon.innerHTML = "";
+  if (kind === "pending") {
+    icon.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
+    return;
+  }
+  icon.textContent = kind === "done" ? "✓" : kind === "error" ? "!" : kind === "decision" ? "→" : "…";
 }
 
 function finishAgentMessage() {
@@ -616,19 +926,186 @@ function finishAgentMessage() {
   activeAgentMessage.feed.append(finalText);
   conversation.scrollTop = conversation.scrollHeight;
   activeAgentMessage = null;
+  activeNodeRows = new Map();
 }
 
-function resetRun() {
+function resetRun(options = {}) {
   titleOutput.textContent = "标题生成中...";
   bodyOutput.textContent = "正文生成中...";
   tagOutput.textContent = "标签生成中...";
   outputState.textContent = "streaming";
   outputParts = { titles: "", body: "", tags: "" };
   latestResult = null;
+  if (!options.preserveCrawler) {
+    resetCrawlerPanel();
+  }
 }
 
 async function refreshStatus() {
-  await fetch("/ui/status");
+  try {
+    const response = await fetch("/ui/status");
+    if (!response.ok) return null;
+    const data = await response.json();
+    latestWorkbenchStatus = data;
+    updateWorkbenchStatus(data);
+    return data;
+  } catch {
+    setCrawlerStatusText(xhsAuthState, "Unknown");
+    setCrawlerStatusText(chromeState, "Unknown");
+    return null;
+  }
+}
+
+async function ensureXhsLoginBeforeRun() {
+  const status = await refreshStatus();
+  if (isXhsLoggedIn(status)) return true;
+
+  isLoginPending = true;
+  outputState.textContent = "login";
+  openLoginGate();
+  syncSubmitAvailability();
+
+  try {
+    const session = await requestXhsLoginSession();
+    if (!session?.session_id) {
+      updateLoginGateStatus(session?.message || "无法打开 Chrome 登录窗口，请检查小红书环境配置。");
+      outputState.textContent = "error";
+      await sleep(1600);
+      closeLoginGate();
+      return false;
+    }
+    updateLoginGateStatus("Chrome 登录窗口已启动，等待扫码登录。");
+    const loginReady = await waitForXhsLogin(session.session_id);
+    if (loginReady) {
+      updateLoginGateStatus("已检测到登录态，开始运行 Agent。");
+      await sleep(350);
+      closeLoginGate();
+      return true;
+    }
+    outputState.textContent = "error";
+    await sleep(1200);
+    closeLoginGate();
+    return false;
+  } catch (error) {
+    updateLoginGateStatus(error.message || String(error));
+    outputState.textContent = "error";
+    await sleep(1600);
+    closeLoginGate();
+    return false;
+  } finally {
+    isLoginPending = false;
+    syncSubmitAvailability();
+  }
+}
+
+function isXhsLoggedIn(status) {
+  const auth = status?.xhs_auth || latestWorkbenchStatus?.xhs_auth || {};
+  return Boolean(auth.available || auth.verified);
+}
+
+async function requestXhsLoginSession() {
+  const response = await fetch("/ui/xhs/login/qrcode", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ timeout_seconds: LOGIN_WORKER_TIMEOUT_SECONDS }),
+  });
+  if (!response.ok) {
+    throw new Error(`登录窗口启动失败：${response.status}`);
+  }
+  return response.json();
+}
+
+async function waitForXhsLogin(sessionId) {
+  const countdownDeadline = Date.now() + LOGIN_GATE_SECONDS * 1000;
+  let countdownExpired = false;
+  while (true) {
+    await sleep(1800);
+    const status = await refreshStatus();
+    if (isXhsLoggedIn(status)) return true;
+    const session = await pollLoginSession(sessionId);
+    if (session?.status === "logged_in") return true;
+    if (session?.message) {
+      updateLoginGateStatus(session.message);
+    }
+    if (["error", "blocked", "timeout", "missing"].includes(session?.status)) {
+      updateLoginGateStatus(session.message || "登录流程中断，请刷新页面后重新运行。");
+    } else if (!countdownExpired && Date.now() >= countdownDeadline) {
+      countdownExpired = true;
+      updateLoginGateStatus("120s 内未检测到登录，仍在持续检测登录态。");
+    }
+  }
+}
+
+async function pollLoginSession(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const response = await fetch(`/ui/xhs/login/${encodeURIComponent(sessionId)}`);
+    if (!response.ok) return null;
+    return response.json();
+  } catch {
+    return null;
+  }
+}
+
+function openLoginGate() {
+  startLoginCountdown();
+  updateLoginGateStatus("正在打开 Chrome 登录窗口...");
+  loginGate?.classList.add("is-open");
+  loginGate?.setAttribute("aria-hidden", "false");
+}
+
+function closeLoginGate() {
+  window.clearInterval(loginCountdownTimer);
+  loginCountdownTimer = null;
+  loginGate?.classList.remove("is-open");
+  loginGate?.setAttribute("aria-hidden", "true");
+}
+
+function startLoginCountdown() {
+  const deadline = Date.now() + LOGIN_GATE_SECONDS * 1000;
+  const tick = () => {
+    const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    if (loginCountdown) loginCountdown.textContent = String(left);
+  };
+  window.clearInterval(loginCountdownTimer);
+  tick();
+  loginCountdownTimer = window.setInterval(tick, 250);
+}
+
+function updateLoginGateStatus(message) {
+  if (loginGateStatus) {
+    loginGateStatus.textContent = message || "等待登录检测...";
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function updateWorkbenchStatus(data) {
+  const auth = data?.xhs_auth || {};
+  const browser = data?.persistent_browser || {};
+  if (auth.verified || auth.available) {
+    setCrawlerStatusText(xhsAuthState, auth.verified ? "已验证" : "Cookie ready");
+  } else if (auth.has_web_session) {
+    setCrawlerStatusText(xhsAuthState, "待验证");
+  } else {
+    setCrawlerStatusText(xhsAuthState, "未登录");
+  }
+  const browserStatus = String(browser.status || "stopped");
+  const browserLabels = {
+    logged_in: "已连接",
+    browser_ready: "运行中",
+    starting: "启动中",
+    qrcode_ready: "扫码中",
+    stopped: "未运行",
+    error: "异常",
+    blocked: "受限",
+    timeout: "超时",
+  };
+  const label = browserLabels[browserStatus] || browserStatus;
+  const pid = browser.pid ? ` #${browser.pid}` : "";
+  setCrawlerStatusText(chromeState, `${label}${pid}`);
 }
 
 async function loadHistoryList() {
@@ -677,6 +1154,7 @@ async function restoreConversation(id) {
   if (latestCompleted) {
     renderOutputParts(latestCompleted.output_parts);
     latestResult = latestCompleted.result || null;
+    renderCrawlerFromResult(latestResult);
   }
   chatComposer.classList.toggle("is-compact", hasSubmittedOnce);
   setSubmitButtonState("idle");
@@ -702,6 +1180,7 @@ function startNewConversation() {
   titleOutput.textContent = "等待 Agent 输出。";
   bodyOutput.textContent = "等待 Agent 输出。";
   tagOutput.textContent = "等待 Agent 输出。";
+  resetCrawlerPanel();
   conversation.innerHTML = "";
   appendIntroMessage();
   setSubmitButtonState("idle");
@@ -740,6 +1219,9 @@ function applyAgentInputToForm(input) {
   ];
   fields.forEach((name) => setFormValue(name, input?.[name] ?? ""));
   agentForm.enable_realtime_research.checked = Boolean(input?.enable_realtime_research);
+  if (crawlLimitInput) {
+    crawlLimitInput.value = clampNumber(input?.realtime_research_max_notes, 1, 30, 20);
+  }
   promptInput.value = "";
   resetPromptInputHeight();
   syncSubmitAvailability();
