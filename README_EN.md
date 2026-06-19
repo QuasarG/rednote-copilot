@@ -34,6 +34,12 @@ Research-backed trend mining → structured viral drafting → humanized rewrite
 
 Most AI copywriting tools produce generic, templated Xiaohongshu posts that feel like ads and get buried by the algorithm. RedNote Copilot is built from the opposite direction: **we start with real creator anxiety data, mine high-interaction seeding patterns, and let a LangGraph agent generate, humanize, and police the copy until it passes compliance.**
 
+### Workbench Preview
+
+<p align="center">
+  <img src="docs/assets/workbench-overview.png" alt="RedNote Copilot workbench overview" width="900">
+</p>
+
 ### Workflow Overview
 
 <p align="center">

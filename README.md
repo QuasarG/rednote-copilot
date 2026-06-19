@@ -22,6 +22,12 @@ RedNote Copilot 不是“一键生成小红书文案”的普通聊天工具，�
 - 用多轮对话持续修改，并保留本地历史。
 - 通过前端工作台展示节点进度、样本列表和最终只读文案。
 
+## 工作台预览
+
+<p align="center">
+  <img src="docs/assets/workbench-overview.png" alt="RedNote Copilot 工作台总览" width="900">
+</p>
+
 ## 工作流概览
 
 <p align="center">
