@@ -8,6 +8,7 @@ from rednote_matrix.memory.store import MemoryRecord, MemoryStore
 KIND_GROUPS = {
     "product_facts": ["product_fact"],
     "brand_voice": ["brand_voice"],
+    "writing_rules": ["writing_rule", "fact_boundary"],
     "risk_rules": ["risk_rule"],
     "examples": ["example"],
     "documents": ["document_chunk", "brand_doc"],
@@ -59,6 +60,7 @@ def run_memory_retriever(state: dict) -> dict:
     counts = {
         "商品事实": len(context.product_facts),
         "品牌语气": len(context.brand_voice),
+        "写作细则": len(context.writing_rules),
         "风险规则": len(context.risk_rules),
         "样例": len(context.examples),
         "文档": len(context.documents),

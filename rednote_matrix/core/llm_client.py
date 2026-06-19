@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,15 +45,24 @@ class OpenAICompatibleClient:
             base_url=self.settings.openai_base_url,
             timeout=self.settings.timeout_seconds,
         )
-        try:
-            response = client.chat.completions.create(
-                model=self.settings.openai_model,
-                messages=messages,
-                temperature=temperature,
-                stream=False,
-            )
-        except Exception as error:
-            raise LLMCallError(f"LLM 请求失败: {error}") from error
+        response = None
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(
+                    model=self.settings.openai_model,
+                    messages=messages,
+                    temperature=temperature,
+                    stream=False,
+                )
+                break
+            except Exception as error:
+                last_error = error
+                if attempt < 2:
+                    time.sleep(0.8 * (attempt + 1))
+
+        if response is None:
+            raise LLMCallError(f"LLM 请求失败: {last_error}") from last_error
 
         content = response.choices[0].message.content
         if not content:

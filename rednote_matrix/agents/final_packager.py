@@ -35,6 +35,7 @@ def run_final_packager(state: dict) -> dict:
     result = AgentResult(
         status=status,
         draft=draft,
+        resolved_user_input=state.get("user_input") or {},
         structure_score=int(state.get("structure_score", 0)),
         human_score=int(state.get("human_score", 0)),
         compliance_score=int(state.get("compliance_score", 0)),

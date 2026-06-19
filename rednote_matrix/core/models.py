@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
 
 class AgentInput(BaseModel):
-    product_name: str = Field(..., description="商品或服务名称")
+    product_name: str = Field(default="", description="商品或服务名称")
     brand_name: str = Field(default="", description="品牌名称")
     price: str = Field(default="", description="售价或价格带")
     selling_points: list[str] = Field(default_factory=list, description="核心卖点")
@@ -15,6 +15,7 @@ class AgentInput(BaseModel):
     account_persona: str = Field(default="真实分享型种草博主", description="账号人设")
     tone: str = Field(default="自然、可信、轻种草", description="语气偏好")
     custom_prompt: str = Field(default="", description="用户自定义创作要求")
+    raw_user_request: str = Field(default="", description="用户自然语言原始需求")
     current_message: str = Field(default="", description="本轮对话新增要求")
     current_changes: list[dict] = Field(default_factory=list, description="本轮左侧商品背景变更")
     conversation_history: list[dict] = Field(default_factory=list, description="本地多轮对话历史")
@@ -23,6 +24,22 @@ class AgentInput(BaseModel):
     enable_realtime_research: bool = Field(default=False, description="是否启用小红书实时趋势检索")
     realtime_research_keywords: list[str] = Field(default_factory=list, description="实时检索关键词")
     realtime_research_max_notes: int = Field(default=6, description="实时检索最多笔记数")
+    research_completed: bool = Field(default=False, description="本会话是否已经完成首次爆款检索")
+
+
+class ParsedUserInput(BaseModel):
+    product_name: str = ""
+    brand_name: str = ""
+    price: str = ""
+    selling_points: list[str] = Field(default_factory=list)
+    target_audience: str = ""
+    scenario: str = ""
+    account_persona: str = ""
+    tone: str = ""
+    custom_prompt: str = ""
+    forbidden_words: list[str] = Field(default_factory=list)
+    realtime_research_keywords: list[str] = Field(default_factory=list)
+    memory_namespace: str = ""
 
 
 class Draft(BaseModel):
@@ -87,6 +104,7 @@ class MemoryContext(BaseModel):
     namespace: str = "global"
     product_facts: list[MemorySnippet] = Field(default_factory=list)
     brand_voice: list[MemorySnippet] = Field(default_factory=list)
+    writing_rules: list[MemorySnippet] = Field(default_factory=list)
     risk_rules: list[MemorySnippet] = Field(default_factory=list)
     examples: list[MemorySnippet] = Field(default_factory=list)
     documents: list[MemorySnippet] = Field(default_factory=list)
@@ -101,6 +119,7 @@ class RevisionRecord(BaseModel):
 class AgentResult(BaseModel):
     status: Literal["pass", "needs_review"]
     draft: Draft
+    resolved_user_input: dict[str, Any] = Field(default_factory=dict)
     structure_score: int
     human_score: int
     compliance_score: int
@@ -118,6 +137,7 @@ class AgentResult(BaseModel):
 
 class AgentState(TypedDict, total=False):
     user_input: dict
+    parsed_input: dict
     draft: dict
     structure_score: int
     human_score: int

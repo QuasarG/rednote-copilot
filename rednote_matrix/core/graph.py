@@ -5,6 +5,7 @@ from langgraph.graph import END, StateGraph
 from rednote_matrix.agents.compliance_agent import run_compliance_agent
 from rednote_matrix.agents.final_packager import run_final_packager
 from rednote_matrix.agents.humanizer_agent import run_humanizer_agent
+from rednote_matrix.agents.input_parser import run_input_parser
 from rednote_matrix.agents.market_research_agent import run_market_research_agent
 from rednote_matrix.agents.memory_retriever import run_memory_retriever
 from rednote_matrix.agents.structure_agent import run_structure_agent
@@ -33,6 +34,7 @@ def route_after_compliance(state: AgentState) -> str:
 
 def build_graph():
     workflow = StateGraph(AgentState)
+    workflow.add_node("input_parser", run_input_parser)
     workflow.add_node("memory_retriever", run_memory_retriever)
     workflow.add_node("market_research_agent", run_market_research_agent)
     workflow.add_node("trend_agent", run_trend_agent)
@@ -42,7 +44,8 @@ def build_graph():
     workflow.add_node("revision_router", _mark_revision_loop)
     workflow.add_node("final_packager", run_final_packager)
 
-    workflow.set_entry_point("memory_retriever")
+    workflow.set_entry_point("input_parser")
+    workflow.add_edge("input_parser", "memory_retriever")
     workflow.add_edge("memory_retriever", "market_research_agent")
     workflow.add_edge("market_research_agent", "trend_agent")
     workflow.add_edge("trend_agent", "structure_agent")

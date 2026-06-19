@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from rednote_matrix.agents.utils import append_revision
-from rednote_matrix.core.models import AgentInput, MarketResearchContext
+from rednote_matrix.core.models import AgentInput, MarketResearchContext, ParsedUserInput
 from rednote_matrix.skills.xiaohongshu import build_trend_insight
 
 
@@ -12,8 +12,23 @@ def _short_text(text: str, limit: int = 36) -> str:
 
 def run_trend_agent(state: dict) -> dict:
     user_input = AgentInput.model_validate(state["user_input"])
+    parsed = ParsedUserInput.model_validate(state.get("parsed_input") or {})
     market_context = MarketResearchContext.model_validate(state.get("market_research_context") or {})
-    insight = build_trend_insight(user_input)
+
+    # 用 parsed 的字段覆盖 user_input（input_parser 已合并到 user_input，这里保底）
+    merged_input = user_input.model_copy()
+    if parsed.product_name and not merged_input.product_name:
+        merged_input.product_name = parsed.product_name
+    if parsed.selling_points and not merged_input.selling_points:
+        merged_input.selling_points = parsed.selling_points
+    if parsed.target_audience and not merged_input.target_audience:
+        merged_input.target_audience = parsed.target_audience
+    if parsed.scenario and not merged_input.scenario:
+        merged_input.scenario = parsed.scenario
+
+    insight = build_trend_insight(merged_input)
+
+    # 融合实时爬取的爆款笔记
     realtime_notes = market_context.notes[:5]
     if realtime_notes:
         realtime_titles = [_short_text(note.title) for note in realtime_notes if note.title]
@@ -46,7 +61,6 @@ def run_trend_agent(state: dict) -> dict:
             "adapted_skill",
             [
                 "吸收项目内置小红书标题/正文/标签方法论",
-                "吸收 2026-06-18 高互动种草样本的通用标题和正文模式",
                 realtime_note,
             ],
         ),

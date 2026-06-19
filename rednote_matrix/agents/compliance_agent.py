@@ -35,6 +35,14 @@ def _price_mentions(text: str) -> list[str]:
     return list(dict.fromkeys(hit.strip() for hit in hits if hit.strip()))
 
 
+def _allow_price_in_copy(user_input: dict) -> bool:
+    price_text = str(user_input.get("price") or "").strip()
+    if not price_text:
+        return False
+    intent_text = f"{user_input.get('current_message') or ''}\n{user_input.get('custom_prompt') or ''}".lower()
+    return any(keyword in intent_text for keyword in ("加上价格", "加入价格", "写价格", "带价格", "标价格", "价格"))
+
+
 def run_compliance_agent(state: dict) -> dict:
     draft = draft_from_state(state)
     text = _collect_text(draft)
@@ -67,16 +75,17 @@ def run_compliance_agent(state: dict) -> dict:
                 )
             )
 
-    for mention in _price_mentions(text):
-        risks.append(
-            RiskItem(
-                type="price_mention",
-                text=mention,
-                reason="最终文案外显具体价格会增强交易和硬广感，可能增加审核风险",
-                suggestion="删除具体价格，改成预算友好、价格不高、先看预算等弱表达",
-                severity="medium",
+    if not _allow_price_in_copy(user_input):
+        for mention in _price_mentions(text):
+            risks.append(
+                RiskItem(
+                    type="price_mention",
+                    text=mention,
+                    reason="最终文案外显具体价格会增强交易和硬广感，可能增加审核风险",
+                    suggestion="删除具体价格，改成预算友好、价格不高、先看预算等弱表达",
+                    severity="medium",
+                )
             )
-        )
 
     for marker in AD_STYLE_MARKERS:
         if marker in text:
@@ -113,6 +122,22 @@ def run_compliance_agent(state: dict) -> dict:
                         reason=f"命中记忆库风险规则：{rule.title}",
                         suggestion="按品牌/平台记忆规则替换为更中性的表达",
                         severity="high",
+                    )
+                )
+
+    for rule in memory_context.writing_rules:
+        if rule.kind != "fact_boundary":
+            continue
+        rule_words = [part.strip() for part in rule.content.replace("，", ",").replace("、", ",").split(",") if part.strip()]
+        for word in rule_words:
+            if word and word in text:
+                risks.append(
+                    RiskItem(
+                        type="memory_fact_boundary",
+                        text=word,
+                        reason=f"命中事实边界记忆：{rule.title}",
+                        suggestion="删除或改成未亲测的观察/筛选/关注点表达",
+                        severity="medium",
                     )
                 )
 
