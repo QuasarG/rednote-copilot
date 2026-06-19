@@ -23,7 +23,9 @@ class WorkbenchTest(unittest.TestCase):
     def test_workbench_index_and_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             old_data_dir = os.environ.get("REDNOTE_DATA_DIR")
+            old_history_dir = os.environ.get("REDNOTE_WORKBENCH_HISTORY_DIR")
             os.environ["REDNOTE_DATA_DIR"] = tmpdir
+            os.environ["REDNOTE_WORKBENCH_HISTORY_DIR"] = os.path.join(tmpdir, "history")
             try:
                 client = app.test_client()
                 index = client.get("/")
@@ -41,6 +43,10 @@ class WorkbenchTest(unittest.TestCase):
                     os.environ.pop("REDNOTE_DATA_DIR", None)
                 else:
                     os.environ["REDNOTE_DATA_DIR"] = old_data_dir
+                if old_history_dir is None:
+                    os.environ.pop("REDNOTE_WORKBENCH_HISTORY_DIR", None)
+                else:
+                    os.environ["REDNOTE_WORKBENCH_HISTORY_DIR"] = old_history_dir
 
         self.assertEqual(index.status_code, 200)
         page = index.get_data(as_text=True)
@@ -101,6 +107,9 @@ class WorkbenchTest(unittest.TestCase):
                     )
                 listing = client.get("/ui/conversations")
                 detail = client.get(f"/ui/conversations/{conversation_id}")
+                delete_response = client.delete(f"/ui/conversations/{conversation_id}")
+                deleted_listing = client.get("/ui/conversations")
+                deleted_detail = client.get(f"/ui/conversations/{conversation_id}")
             finally:
                 if old_data_dir is None:
                     os.environ.pop("REDNOTE_DATA_DIR", None)
@@ -114,7 +123,12 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual(second.status_code, 200)
         self.assertEqual(listing.status_code, 200)
         self.assertEqual(detail.status_code, 200)
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertEqual(deleted_detail.status_code, 404)
         self.assertEqual(listing.get_json()["items"][0]["id"], conversation_id)
+        self.assertEqual(len(listing.get_json()["items"][0]["turns"]), 2)
+        self.assertIn("reply_preview", listing.get_json()["items"][0]["turns"][0])
+        self.assertEqual(deleted_listing.get_json()["items"], [])
         record = detail.get_json()
         self.assertEqual(len(record["turns"]), 2)
         self.assertEqual(record["turns"][1]["message"], "标题再像真人一点")
@@ -150,7 +164,9 @@ class WorkbenchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             old_data_dir = os.environ.get("REDNOTE_DATA_DIR")
+            old_history_dir = os.environ.get("REDNOTE_WORKBENCH_HISTORY_DIR")
             os.environ["REDNOTE_DATA_DIR"] = tmpdir
+            os.environ["REDNOTE_WORKBENCH_HISTORY_DIR"] = os.path.join(tmpdir, "history")
             try:
                 client = app.test_client()
                 from rednote_matrix.integrations.xhs_core import XhsCoreEnvironment
@@ -178,6 +194,10 @@ class WorkbenchTest(unittest.TestCase):
                     os.environ.pop("REDNOTE_DATA_DIR", None)
                 else:
                     os.environ["REDNOTE_DATA_DIR"] = old_data_dir
+                if old_history_dir is None:
+                    os.environ.pop("REDNOTE_WORKBENCH_HISTORY_DIR", None)
+                else:
+                    os.environ["REDNOTE_WORKBENCH_HISTORY_DIR"] = old_history_dir
 
         market_events = [event for event in events if event.get("type") == "market_note"]
         market_note_index = next(index for index, event in enumerate(events) if event.get("type") == "market_note")

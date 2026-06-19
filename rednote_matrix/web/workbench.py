@@ -52,6 +52,13 @@ def create_app() -> Flask:
             return jsonify({"detail": "对话不存在"}), 404
         return jsonify(record)
 
+    @app.delete("/ui/conversations/<conversation_id>")
+    def ui_delete_conversation(conversation_id: str) -> Response:
+        deleted = LocalConversationStore().delete(conversation_id)
+        if not deleted:
+            return jsonify({"detail": "对话不存在"}), 404
+        return jsonify({"status": "deleted", "id": conversation_id})
+
     @app.post("/ui/xhs/login/qrcode")
     def ui_xhs_login_qrcode() -> Response:
         payload = request.get_json(silent=True) or {}

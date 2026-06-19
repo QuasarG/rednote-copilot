@@ -50,6 +50,16 @@ class LocalConversationStore:
             return None
         return self._read(path)
 
+    def delete(self, conversation_id: str) -> bool:
+        safe_id = _clean_id(conversation_id)
+        if not safe_id:
+            return False
+        path = self._path(safe_id)
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
+
     def start_turn(
         self,
         conversation_id: str | None,
@@ -193,6 +203,7 @@ class LocalConversationStore:
             "turn_count": len(turns),
             "latest_message": latest.get("message", ""),
             "latest_status": latest.get("status", ""),
+            "turns": [_turn_summary(turn, index) for index, turn in enumerate(turns)],
         }
 
 
@@ -212,6 +223,20 @@ def _find_turn(record: dict[str, Any], turn_id: str) -> dict[str, Any] | None:
         if turn.get("id") == turn_id:
             return turn
     return None
+
+
+def _turn_summary(turn: dict[str, Any], index: int) -> dict[str, Any]:
+    output = turn.get("output_parts") or {}
+    reply = output.get("titles") or output.get("body") or output.get("tags") or turn.get("error") or "暂无回复"
+    return {
+        "id": turn.get("id", ""),
+        "index": index + 1,
+        "status": turn.get("status", ""),
+        "created_at": turn.get("created_at", ""),
+        "updated_at": turn.get("updated_at", ""),
+        "message": _truncate(turn.get("message") or _title_from_input(turn.get("agent_input") or {}), 72),
+        "reply_preview": _truncate(reply, 96),
+    }
 
 
 def _public_agent_input(agent_input: dict[str, Any]) -> dict[str, Any]:

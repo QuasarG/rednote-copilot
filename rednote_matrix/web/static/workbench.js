@@ -21,6 +21,9 @@ const historyClose = document.querySelector("#historyClose");
 const historyDrawer = document.querySelector("#historyDrawer");
 const historyList = document.querySelector("#historyList");
 const newConversationButton = document.querySelector("#newConversationButton");
+const contextPanel = document.querySelector(".panel-context");
+const chatPanel = document.querySelector(".panel-chat");
+const outputPanel = document.querySelector(".panel-right");
 const loginGate = document.querySelector("#loginGate");
 const loginCountdown = document.querySelector("#loginCountdown");
 const loginGateStatus = document.querySelector("#loginGateStatus");
@@ -50,6 +53,7 @@ let loginCountdownTimer = null;
 let userPromptHeight = PROMPT_INPUT_MIN_HEIGHT;
 
 initTypewriters();
+initHistoryHint();
 syncSubmitAvailability();
 loadHistoryList();
 
@@ -96,6 +100,7 @@ async function runSubmittedPayload(payload, userMessage, changes) {
   chatComposer.classList.add("is-compact");
   submitButton.disabled = true;
   setSubmitButtonState("running");
+  flashPanel(chatPanel, "agent");
 
   try {
     await streamAgent(payload);
@@ -126,6 +131,7 @@ async function runSubmittedPayload(payload, userMessage, changes) {
 }
 
 historyToggle.addEventListener("click", async () => {
+  historyToggle.classList.remove("history-attention");
   historyDrawer.classList.add("is-open");
   historyDrawer.setAttribute("aria-hidden", "false");
   await loadHistoryList();
@@ -163,6 +169,14 @@ if (skipCrawlerButton) {
 promptInput.addEventListener("input", () => {
   growPromptInput();
   syncSubmitAvailability();
+});
+
+promptInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  if (!submitButton.disabled) {
+    agentForm.requestSubmit();
+  }
 });
 
 if (composerResizeHandle) {
@@ -405,10 +419,12 @@ function handleEvent(event) {
   }
   if (event.type === "market_note") {
     appendCrawlerNote(event.note || {}, event.index || crawlerNotes.length + 1);
+    flashPanel(contextPanel, "crawler");
     return;
   }
   if (event.type === "result") {
     latestResult = event.result;
+    flashPanel(outputPanel, "output");
     renderDraft(event.result);
     outputState.textContent = "ready";
     finishAgentMessage();
@@ -440,6 +456,7 @@ function renderDraft(result) {
     tags: tags.join(" "),
   };
   streamHtmlTokens(titleOutput, markdownLines(titles.map((title, index) => `${index + 1}. ${title}`)));
+  flashPanel(outputPanel, "output");
   streamHtmlTokens(bodyOutput, escapeHtml(body).replace(/\n/g, "<br>"));
   streamHtmlTokens(tagOutput, tags.map((tag) => `<span class="tag-pill">${escapeHtml(tag)}</span>`).join(""));
 }
@@ -534,6 +551,7 @@ function appendCrawlerNote(note, index) {
   if (empty) empty.remove();
   crawlerNoteList.append(createCrawlerNoteCard(note, index));
   crawlerNoteList.scrollTop = crawlerNoteList.scrollHeight;
+  flashPanel(contextPanel, "crawler");
   setCrawlerStatusText(crawlerCountState, `${crawlerNotes.length} 条`);
   updateCrawlerInsights(buildCrawlerInsights(crawlerNotes, "completed", ""));
 }
@@ -1082,6 +1100,21 @@ function sleep(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function initHistoryHint() {
+  if (!historyToggle) return;
+  historyToggle.classList.add("history-attention");
+  historyToggle.title = "点击打开历史对话";
+}
+
+function flashPanel(panel, kind) {
+  if (!panel) return;
+  const className = `panel-flash-${kind}`;
+  panel.classList.remove(className);
+  void panel.offsetWidth;
+  panel.classList.add(className);
+  window.setTimeout(() => panel.classList.remove(className), 1700);
+}
+
 function updateWorkbenchStatus(data) {
   const auth = data?.xhs_auth || {};
   const browser = data?.persistent_browser || {};
@@ -1122,21 +1155,80 @@ async function loadHistoryList() {
     historyList.append(empty);
     return;
   }
-  items.forEach((item) => {
-    const button = document.createElement("button");
-    button.className = "history-item";
-    button.type = "button";
-    button.innerHTML = `
-      <strong>${escapeHtml(item.title || "未命名对话")}</strong>
-      <span>${escapeHtml(item.latest_message || "无新增要求")}</span>
-      <small>${item.turn_count || 0} 轮 · ${escapeHtml(formatTime(item.updated_at))}</small>
-    `;
-    button.addEventListener("click", () => restoreConversation(item.id));
-    historyList.append(button);
-  });
+  items.forEach((item) => historyList.append(createHistoryConversationCard(item)));
 }
 
-async function restoreConversation(id) {
+function createHistoryConversationCard(item) {
+  const card = document.createElement("article");
+  card.className = "history-conversation-card";
+
+  const head = document.createElement("div");
+  head.className = "history-conversation-head";
+
+  const titleButton = document.createElement("button");
+  titleButton.className = "history-conversation-title";
+  titleButton.type = "button";
+  titleButton.innerHTML = `
+    <strong>${escapeHtml(item.title || "未命名对话")}</strong>
+    <small>${item.turn_count || 0} 轮 · ${escapeHtml(formatTime(item.updated_at))}</small>
+  `;
+  titleButton.addEventListener("click", () => restoreConversation(item.id));
+
+  const deleteButton = document.createElement("button");
+  deleteButton.className = "history-delete-button";
+  deleteButton.type = "button";
+  deleteButton.setAttribute("aria-label", "删除历史对话");
+  deleteButton.textContent = "×";
+  deleteButton.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await deleteConversation(item.id, card);
+  });
+
+  head.append(titleButton, deleteButton);
+  card.append(head);
+
+  const turns = Array.isArray(item.turns) ? item.turns : [];
+  const turnList = document.createElement("div");
+  turnList.className = "history-turn-list";
+  if (turns.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "history-turn-empty";
+    empty.textContent = "暂无交互记录";
+    turnList.append(empty);
+  } else {
+    turns.forEach((turn) => turnList.append(createHistoryTurnCard(item.id, turn)));
+  }
+  card.append(turnList);
+  return card;
+}
+
+function createHistoryTurnCard(conversationID, turn) {
+  const button = document.createElement("button");
+  button.className = `history-turn-card history-turn-${turn.status || "unknown"}`;
+  button.type = "button";
+  button.innerHTML = `
+    <span class="history-turn-index">#${turn.index || "?"}</span>
+    <span class="history-turn-text">${escapeHtml(turn.message || "无新增要求")}</span>
+    <span class="history-turn-reply">${escapeHtml(turn.reply_preview || "暂无回复")}</span>
+  `;
+  button.addEventListener("click", () => restoreConversation(conversationID, turn.id));
+  return button;
+}
+
+async function deleteConversation(id, card) {
+  if (!id) return;
+  const response = await fetch(`/ui/conversations/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!response.ok) return;
+  if (conversationId === id) {
+    startNewConversation();
+  }
+  card?.remove();
+  if (historyList && !historyList.querySelector(".history-conversation-card")) {
+    historyList.innerHTML = '<div class="history-empty">暂无历史对话。</div>';
+  }
+}
+
+async function restoreConversation(id, turnId = "") {
   const response = await fetch(`/ui/conversations/${encodeURIComponent(id)}`);
   if (!response.ok) return;
   const record = await response.json();
@@ -1151,9 +1243,13 @@ async function restoreConversation(id) {
     appendRestoredAgentTurn(turn, index);
   });
   const latestCompleted = [...(record.turns || [])].reverse().find((turn) => turn.output_parts);
-  if (latestCompleted) {
-    renderOutputParts(latestCompleted.output_parts);
-    latestResult = latestCompleted.result || null;
+  const selectedTurn = turnId
+    ? (record.turns || []).find((turn) => turn.id === turnId && turn.output_parts)
+    : null;
+  const outputTurn = selectedTurn || latestCompleted;
+  if (outputTurn) {
+    renderOutputParts(outputTurn.output_parts);
+    latestResult = outputTurn.result || null;
     renderCrawlerFromResult(latestResult);
   }
   chatComposer.classList.toggle("is-compact", hasSubmittedOnce);
