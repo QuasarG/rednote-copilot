@@ -169,6 +169,8 @@ Open:
 http://localhost:8501
 ```
 
+On the first run that triggers Xiaohongshu real-time search, you will be prompted to log in to Xiaohongshu. Follow the browser window or QR code to complete login, and keep the login window alive until the workbench reports success; otherwise the search node will fail or be skipped.
+
 Start the FastAPI service only:
 
 ```bash
@@ -254,6 +256,10 @@ python -m unittest discover -s tests -v
 ```
 
 ---
+
+## Test Environment Note
+
+Due to limited time and devices, this project was developed and tested primarily on a local Arch Linux machine. Both the Docker and local development paths have been verified in this environment. Other operating systems or hardware platforms are theoretically portable but have not been practically verified. This delivery targets an MVP, so cross-platform compatibility and deployment are not the core focus at this stage.
 
 ## Roadmap
 

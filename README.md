@@ -134,6 +134,8 @@ docker run --rm -p 8501:8501 --env-file .env -v "$PWD/data:/app/data" rednote-co
 http://localhost:8501
 ```
 
+首次使用小红书实时检索功能时，系统会提示你登录小红书。请按弹出的浏览器窗口或二维码完成登录，并保持登录窗口存活，直到工作台提示登录成功；否则后续检索节点会失败或跳过。
+
 如果只需要 FastAPI：
 
 ```bash
@@ -208,6 +210,10 @@ python -m unittest tests.test_api tests.test_workbench tests.test_agent_graph -v
 - 小红书实时检索依赖登录态，可能受平台风控影响。
 - 本项目借鉴了 MediaCrawler 的小红书抓取思路，但保留为项目内轻量集成。
 - `.env`、本地 Python 环境目录、`data/`、`.rednote_workbench_history/` 都不应提交。
+
+## 测试环境说明
+
+由于时间和设备有限，本项目主要在本机 Arch Linux 环境完成开发与测试，Docker 与本地开发路径均在此环境下验证通过。其他操作系统或硬件平台在理论上具备可迁移性，但尚未实际验证。本次交付以 MVP 为目标，跨端兼容与部署不是当前最核心的功能点。
 
 ## 英文文档
 
