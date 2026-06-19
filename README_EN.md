@@ -129,15 +129,36 @@ https://github.com/user-attachments/assets/rednote-copilot-demo-placeholder
 
 Example input: `Write a Xiaohongshu seeding post for CleanMint kitchen degreasing wipes. The target audience is renting women who cook often but do not want to spend much time scrubbing the stove. The price is 29.9 RMB per pack, but do not directly mention the price in the final copy. The tone should feel like a real friend sharing, not an ad.`
 
-| Dimension | Direct generic LLM API | RedNote Copilot Agent |
-|-----------|------------------------|------------------------|
-| Input understanding | Often pushes all facts directly into the copy, mixing price, benefits, and constraints | Parses product, brand, audience, price policy, and tone before generation |
-| Viral structure | Usually returns a generic title, body, and tags template | Organizes the note around scenario pain, before/after change, restrained seeding, and engagement ending |
-| Platform context | Lacks current Xiaohongshu reference material for similar products | Can search high-engagement notes and use their titles, comments, and patterns as references |
-| Compliance risk | May mention price directly, overpromise, or use hard-sell phrases | Scans for risky wording, direct price exposure, hard-ad tone, and routes drafts back for revision |
-| Human voice | Tends to produce templated phrases such as overexcited influencer copy | Humanizer node softens ad tone and rewrites toward lived experience |
-| Multi-turn editing | Follow-up turns may lose context unless the user repeats requirements | Preserves session state and product memory for requests such as "make it more casual" |
-| Final delivery | One block of text that users must split manually | Frontend separates title, body, and tags into read-only copy cards |
+**Direct generic LLM API output:**
+
+```text
+Title: This kitchen degreasing wipe is seriously useful!
+
+Everyone, I found a great CleanMint kitchen cleaning wipe. It removes oil stains easily and works on the stove, range hood, and wall. The price is also very friendly, so renters should definitely try it. After cooking, just take one wipe and the kitchen looks clean again.
+
+#KitchenCleaning #CleaningTool #RentalHome #DegreasingWipes
+```
+
+**RedNote Copilot Agent output:**
+
+```text
+Titles:
+1. After work I did not want to clean the kitchen, then one wipe saved me
+2. If the stove is greasy after cooking, do not rush for the steel wool
+
+Body:
+After cooking dinner, there is always a thin oily layer on the stove. I used to look for gloves, spray cleaner, and wipe back and forth until I felt even more tired.
+
+CleanMint's kitchen degreasing wipes made the cleanup feel less like a separate chore. I can pull one sheet after cooking and quickly wipe the stove edge and counter. The oil film comes off more easily, and the smell is not harsh.
+
+It is not magic. Heavy oil still needs a few more passes. But for a small rental kitchen, using it right after cooking makes daily cleanup much easier.
+
+How do you usually clean the stove after cooking? Any lazier method worth trying?
+
+Tags: #KitchenCleaning #RentalKitchen #AfterWorkCooking #LazyCleaning #CleanMint
+```
+
+Why it is better: RedNote Copilot does not pass the prompt straight to a model. It separates product facts, user constraints, viral structure, and compliance risk into multiple workflow nodes. That helps it avoid direct price exposure, hard-sell language, and templated AI wording, while producing titles, body copy, and tags that fit the Xiaohongshu context more naturally.
 
 ---
 
