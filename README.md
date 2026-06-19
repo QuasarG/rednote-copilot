@@ -6,6 +6,15 @@
 
 [English README](./README_EN.md)
 
+[![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1C3C3C?style=flat-square&logo=langchain&logoColor=white)](https://www.langchain.com/langgraph)
+[![LangChain](https://img.shields.io/badge/LangChain-1C3C3C?style=flat-square&logo=langchain&logoColor=white)](https://www.langchain.com/)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](./Dockerfile)
+[![Tests](https://img.shields.io/badge/Tests-unittest-E5A50A?style=flat-square)](./tests)
+[![RAG](https://img.shields.io/badge/RAG-Memory_Agent-7C4DFF?style=flat-square)]()
+[![License](https://img.shields.io/badge/License-MIT-00C853?style=flat-square)](./LICENSE)
+
 面向小红书种草场景的 AI Agent 工作台：爆款样本检索、结构化文案生成、真人网感改写、合规风险检查和多轮对话交付。
 
 </div>
