@@ -22,6 +22,12 @@ RedNote Copilot 不是“一键生成小红书文案”的普通聊天工具，�
 - 用多轮对话持续修改，并保留本地历史。
 - 通过前端工作台展示节点进度、样本列表和最终只读文案。
 
+## 工作流概览
+
+<p align="center">
+  <img src="docs/assets/agent-flow.png" alt="RedNote Copilot Agent 工作流" width="760">
+</p>
+
 ## 数据依据
 
 项目早期围绕“小红书运营太难了”“被限流”“笔记违规”“做小红书多账号”“爆款文案怎么写”等关键词抓取并分析了一批真实运营讨论数据。清洗后的文本分析结论显示，用户最集中的焦虑不是“缺一段文案”，而是：
@@ -33,16 +39,19 @@ RedNote Copilot 不是“一键生成小红书文案”的普通聊天工具，�
 | 文案结构缺失 | 用户反复讨论标题、开头、框架和节奏 | 双标题、场景钩子、正文结构生成 |
 | AI 味与信任问题 | 频率不如流量焦虑高，但影响内容可信度 | 真人网感改写、弱化模板化表达 |
 
-推荐佐证图表位于本地数据目录：
+<p align="center">
+  <img src="docs/assets/need-theme-counts.png" alt="小红书运营痛点主题分布" width="760">
+</p>
 
-`data/xhs_ops_research_20260618/analysis/need_theme_analysis/theme_counts.png`
+核心数据摘要：
 
-相关分析报告：
-
-- `data/xhs_ops_research_20260618/analysis/need_theme_analysis/need_theme_report.md`
-- `data/xhs_ops_research_20260618/analysis/ai_tool_need_validation/ai_tool_need_validation_report.md`
-
-`data/` 目录默认不进入 Git 仓库。
+| 指标 | 数值 |
+| --- | --- |
+| 目标帖子 | 50 条 |
+| 原始评论 | 4,962 条 |
+| 去重后评论 | 4,798 条 |
+| 有效评论 | 4,623 条 |
+| 主题分析样本 | 4,035 条 |
 
 ## 核心能力
 

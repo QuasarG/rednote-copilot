@@ -34,6 +34,12 @@ Research-backed trend mining → structured viral drafting → humanized rewrite
 
 Most AI copywriting tools produce generic, templated Xiaohongshu posts that feel like ads and get buried by the algorithm. RedNote Copilot is built from the opposite direction: **we start with real creator anxiety data, mine high-interaction seeding patterns, and let a LangGraph agent generate, humanize, and police the copy until it passes compliance.**
 
+### Workflow Overview
+
+<p align="center">
+  <img src="docs/assets/agent-flow.png" alt="RedNote Copilot Agent workflow" width="760">
+</p>
+
 ### Evidence: what creators actually worry about
 
 We analyzed Xiaohongshu operation-related posts and comments to avoid building the product from imagined needs. The key point from the data is simple: users are not primarily asking for "more copy"; they are anxious about **traffic, visibility, compliance risk, and not knowing what structure makes a note work**.
@@ -61,24 +67,19 @@ This means the product argument should be framed carefully:
 - AI-specific complaints are sparse, so "anti-AI feeling" should be positioned as a quality and trust layer, not as the highest-frequency pain point.
 - The strongest product need is a workflow: **structured generation -> humanized rewrite -> compliance scan -> revision**, which a one-shot chat model does not provide.
 
-For final writeups, the most useful supporting figure is the plain theme distribution chart:
+<p align="center">
+  <img src="docs/assets/need-theme-counts.png" alt="Theme distribution of Xiaohongshu operation pain points" width="760">
+</p>
 
-`data/xhs_ops_research_20260618/analysis/need_theme_analysis/theme_counts.png`
+Research summary:
 
-It directly shows the topic coverage over cleaned comments without extra design interpretation. Use these files when you need the underlying evidence:
-
-| Artifact | File |
-|----------|------|
-| Recommended evidence figure | `data/xhs_ops_research_20260618/analysis/need_theme_analysis/theme_counts.png` |
-| Full analysis report | `data/xhs_ops_research_20260618/analysis/need_theme_analysis/need_theme_report.md` |
-| Theme summary table | `data/xhs_ops_research_20260618/analysis/need_theme_analysis/theme_summary.csv` |
-| Strategic need summary | `data/xhs_ops_research_20260618/analysis/need_theme_analysis/strategic_need_summary.csv` |
-| Theme-coded comments | `data/xhs_ops_research_20260618/analysis/need_theme_analysis/theme_coded_comments.csv` |
-| Theme co-occurrence matrix | `data/xhs_ops_research_20260618/analysis/need_theme_analysis/theme_cooccurrence.csv` |
-| AI need validation matrix | `data/xhs_ops_research_20260618/analysis/ai_tool_need_validation/ai_tool_need_matrix.csv` |
-| AI need validation report | `data/xhs_ops_research_20260618/analysis/ai_tool_need_validation/ai_tool_need_validation_report.md` |
-| Word frequency | `data/xhs_ops_research_20260618/analysis/word_frequency.csv` |
-| Word cloud | `data/xhs_ops_research_20260618/analysis/wordcloud.png` |
+| Metric | Value |
+|--------|------:|
+| Target posts | 50 |
+| Raw comments | 4,962 |
+| Deduplicated comments | 4,798 |
+| Valid comments | 4,623 |
+| Theme-analysis sample | 4,035 |
 
 <!-- DEMO VIDEO: Replace with your recorded demo -->
 <!-- Place demo video at: docs/assets/demo-video.mp4 -->
