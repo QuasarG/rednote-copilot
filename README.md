@@ -62,20 +62,19 @@ RedNote Copilot 不是“一键生成小红书文案”的普通聊天工具，�
 - **本地历史会话**：工作台历史保存在 `.rednote_workbench_history/`，不会进入仓库。
 - **只读输出卡片**：前端右侧固定展示标题、正文、标签，并提供复制按钮。
 
-## Agent 流程
+## 同样输入下的差异
 
-```text
-input_parser
-  -> memory_retriever
-  -> market_research_agent
-  -> trend_agent
-  -> structure_agent
-  -> humanizer_agent
-  -> compliance_agent
-  -> revision_router
-      -> pass -> final_packager
-      -> reject -> humanizer_agent
-```
+示例输入：`帮我写一篇小红书种草文案。产品是厨房油污清洁湿巾，品牌 CleanMint，目标人群是经常做饭但不想花太多时间刷灶台的租房女生。价格 29.9 元一包，但正文里不要直接写价格。语气要像真实朋友分享，别太广告。`
+
+| 对比维度 | 直接调用通用 LLM API | RedNote Copilot Agent |
+| --- | --- | --- |
+| 输入理解 | 往往把所有信息一次性塞进文案，价格、卖点和限制容易混在一起 | 先解析商品、品牌、人群、价格限制和语气要求，再进入后续节点 |
+| 爆款结构 | 常见输出是“标题 + 正文 + 标签”的普通模板 | 按小红书场景组织：痛点场景、使用前后变化、克制种草、互动结尾 |
+| 平台语境 | 不知道当前小红书同类内容常见表达，容易泛化 | 可选实时检索高互动笔记，把标题、评论和趋势样本作为参考 |
+| 合规风险 | 可能直接写价格、夸张承诺或硬广词，需要人工复查 | 合规节点检查极限词、硬广感、价格直给和导流风险，并触发回炉 |
+| 真人感 | 容易出现“家人们冲”“闭眼入”等模板化表达 | 真人网感节点弱化广告腔，改成更像真实使用经历的表达 |
+| 多轮修改 | 下一轮容易丢失上一轮上下文，需要用户反复解释 | 保留会话状态和商品记忆，可继续说“更口语一点”“这版加上价格” |
+| 最终交付 | 一整段文本，用户还要自己拆标题、正文、标签 | 前端自动拆成标题、正文、标签三张只读卡片，分别复制 |
 
 ## 目录结构
 
@@ -94,18 +93,15 @@ tests/             单元测试
 scripts/           数据分析脚本
 ```
 
-## 环境配置
+## 快速启动（Docker 推荐）
 
-建议使用项目内 `.venv`，不要污染全局 Python 环境。
+Docker 会在镜像内安装后端依赖和 Playwright Chromium，适合快速演示和部署。首次启动前先准备 `.env`：
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-agent.txt
-playwright install chromium
+cp .env.example .env
 ```
 
-根目录维护 `.env`，该文件已被 `.gitignore` 忽略：
+至少配置一个 OpenAI-compatible 模型服务。DeepSeek 示例：
 
 ```bash
 DEEPSEEK_API_KEY=your_key_here
@@ -113,24 +109,17 @@ OPENAI_BASE_URL=https://api.deepseek.com
 OPENAI_MODEL=deepseek-chat
 ```
 
-## 运行方式
-
-CLI 示例：
+构建镜像：
 
 ```bash
-.venv/bin/python -m rednote_matrix.cli examples/sample_input.json
+docker build -t rednote-copilot-agent .
 ```
 
-FastAPI：
+启动 Web 工作台（推荐）：
 
 ```bash
-.venv/bin/python -m rednote_matrix.server.api
-```
-
-Flask 工作台：
-
-```bash
-.venv/bin/flask --app rednote_matrix.web.workbench run --host 0.0.0.0 --port 8501
+docker run --rm -p 8501:8501 --env-file .env -v "$PWD/data:/app/data" rednote-copilot-agent \
+  flask --app rednote_matrix.web.workbench run --host 0.0.0.0 --port 8501
 ```
 
 打开：
@@ -139,24 +128,64 @@ Flask 工作台：
 http://localhost:8501
 ```
 
-Docker：
+如果只需要 FastAPI：
 
 ```bash
-docker build -t rednote-copilot-agent .
 docker run --rm -p 8000:8000 --env-file .env -v "$PWD/data:/app/data" rednote-copilot-agent
 ```
 
-运行工作台：
+健康检查：
 
 ```bash
-docker run --rm -p 8501:8501 --env-file .env -v "$PWD/data:/app/data" rednote-copilot-agent \
-  flask --app rednote_matrix.web.workbench run --host 0.0.0.0 --port 8501
+curl http://localhost:8000/health
+```
+
+也可以使用 Docker Compose 启动默认 API 服务：
+
+```bash
+docker compose up --build
+```
+
+注意：当前 compose 默认运行 FastAPI；如果要打开工作台，请使用上面的 Web 工作台启动命令。
+
+## 本地开发启动（可选）
+
+请在任意隔离 Python 环境中运行，例如 conda、venv 或 uv。项目不会提交本地环境目录。
+
+```bash
+pip install -r requirements-agent.txt
+playwright install chromium
+cp .env.example .env
+```
+
+CLI 示例：
+
+```bash
+python -m rednote_matrix.cli examples/sample_input.json
+```
+
+启动 FastAPI：
+
+```bash
+python -m rednote_matrix.server.api
+```
+
+启动 Flask 工作台：
+
+```bash
+flask --app rednote_matrix.web.workbench run --host 0.0.0.0 --port 8501
+```
+
+打开：
+
+```text
+http://localhost:8501
 ```
 
 ## 测试
 
 ```bash
-.venv/bin/python -m unittest tests.test_api tests.test_workbench tests.test_agent_graph -v
+python -m unittest tests.test_api tests.test_workbench tests.test_agent_graph -v
 ```
 
 当前核心测试覆盖：
@@ -172,7 +201,7 @@ docker run --rm -p 8501:8501 --env-file .env -v "$PWD/data:/app/data" rednote-co
 - 用户可以输入价格，但默认不建议直接在最终文案中输出价格，避免触发平台风险或硬广感。
 - 小红书实时检索依赖登录态，可能受平台风控影响。
 - 本项目借鉴了 MediaCrawler 的小红书抓取思路，但保留为项目内轻量集成。
-- `.env`、`.venv`、`data/`、`.rednote_workbench_history/` 都不应提交。
+- `.env`、本地 Python 环境目录、`data/`、`.rednote_workbench_history/` 都不应提交。
 
 ## 英文文档
 

@@ -110,78 +110,63 @@ https://github.com/user-attachments/assets/rednote-copilot-demo-placeholder
 
 ---
 
-## Agent Flow
+## Same Input, Different Output Path
 
-```text
-input_parser
-  -> market_research_agent   (real-time XHS search if research not completed)
-  -> trend_agent             (pattern injection from xhs_viral_seed_20260618)
-  -> structure_agent         (6-part seeding skeleton + dual title)
-  -> humanizer_agent         (anti-AI, scenario-first rewrite)
-  -> compliance_agent        (risk scan + structural score)
-  -> revision_router
-      -> pass -> final_packager
-      -> compliance/ai_trace reject -> humanizer_agent -> compliance_agent
-      -> structure reject -> structure_agent -> humanizer_agent -> compliance_agent
-```
+Example input: `Write a Xiaohongshu seeding post for CleanMint kitchen degreasing wipes. The target audience is renting women who cook often but do not want to spend much time scrubbing the stove. The price is 29.9 RMB per pack, but do not directly mention the price in the final copy. The tone should feel like a real friend sharing, not an ad.`
 
-Nodes run as a LangGraph state machine. `market_research_agent` performs real-time Xiaohongshu search only when the research flag has not been satisfied. `compliance_agent` is the core rejection node: drafts that hit forbidden words, hard-ad导流 patterns, or AI-template phrasing are sent back to `humanizer_agent`; drafts with insufficient structure return to `structure_agent`. If the maximum revision loop count is reached without resolution, the output is flagged as `needs_review` and delivered with a publish checklist.
+| Dimension | Direct generic LLM API | RedNote Copilot Agent |
+|-----------|------------------------|------------------------|
+| Input understanding | Often pushes all facts directly into the copy, mixing price, benefits, and constraints | Parses product, brand, audience, price policy, and tone before generation |
+| Viral structure | Usually returns a generic title, body, and tags template | Organizes the note around scenario pain, before/after change, restrained seeding, and engagement ending |
+| Platform context | Lacks current Xiaohongshu reference material for similar products | Can search high-engagement notes and use their titles, comments, and patterns as references |
+| Compliance risk | May mention price directly, overpromise, or use hard-sell phrases | Scans for risky wording, direct price exposure, hard-ad tone, and routes drafts back for revision |
+| Human voice | Tends to produce templated phrases such as overexcited influencer copy | Humanizer node softens ad tone and rewrites toward lived experience |
+| Multi-turn editing | Follow-up turns may lose context unless the user repeats requirements | Preserves session state and product memory for requests such as "make it more casual" |
+| Final delivery | One block of text that users must split manually | Frontend separates title, body, and tags into read-only copy cards |
 
 ---
 
-## Quick Start
+## Quick Start: Docker Recommended
 
-### 1. Environment
+Docker installs backend dependencies and Playwright Chromium inside the image, which is the simplest path for demos and deployment.
 
-The project uses a local `.venv`. Do not pollute the system Python.
-
-```bash
-uv pip install -r requirements.txt
-```
-
-### 2. Configure LLM
+Create the environment file first:
 
 ```bash
 cp .env.example .env
 ```
 
-```bash
-# OpenAI-compatible
-OPENAI_API_KEY=your_key
-OPENAI_MODEL=your_model
-OPENAI_BASE_URL=https://api.openai.com/v1
+Configure at least one OpenAI-compatible model provider. DeepSeek example:
 
-# Or DeepSeek
-DEEPSEEK_API_KEY=your_key
-OPENAI_MODEL=deepseek-v4-pro
+```bash
+DEEPSEEK_API_KEY=your_key_here
 OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-chat
 ```
 
-### 3. Run CLI demo
+Build the image:
 
 ```bash
-uv run python -m rednote_matrix.cli examples/sample_input.json
-uv run python -m rednote_matrix.cli examples/risky_input.json
+docker build -t rednote-copilot-agent .
 ```
 
-Add `--json` for the full state:
+Start the web workbench (recommended):
 
 ```bash
-uv run python -m rednote_matrix.cli examples/sample_input.json --json
+docker run --rm -p 8501:8501 --env-file .env -v "$PWD/data:/app/data" rednote-copilot-agent \
+  flask --app rednote_matrix.web.workbench run --host 0.0.0.0 --port 8501
 ```
 
----
+Open:
 
-## Usage
+```text
+http://localhost:8501
+```
 
-### CLI
-
-Default output is user-facing Xiaohongshu copy (title, body, tags). Debug output includes `draft`, `risk_items`, `revision_history`, and `publish_checklist`.
-
-### FastAPI server
+Start the FastAPI service only:
 
 ```bash
-uv run python -m rednote_matrix.server.api
+docker run --rm -p 8000:8000 --env-file .env -v "$PWD/data:/app/data" rednote-copilot-agent
 ```
 
 Health check:
@@ -190,58 +175,41 @@ Health check:
 curl http://localhost:8000/health
 ```
 
-Chat endpoint:
+You can also use Docker Compose for the default API service:
 
 ```bash
-curl -X POST http://localhost:8000/chat \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "message": "帮我写一条种草笔记",
-    "debug": true,
-    "agent_input": {
-      "product_name": "桌面收纳托盘",
-      "selling_points": ["小桌面也能放下", "拿东西不用翻半天"],
-      "target_audience": "租房小桌面用户",
-      "scenario": "晚上一边办公一边找东西",
-      "memory_namespace": "brand/acme/tray"
-    }
-  }'
+docker compose up --build
 ```
 
-### XHS Core real-time research
+Note: the current compose file starts FastAPI by default. Use the workbench command above when you want the browser UI.
 
-Check integration status:
+## Local Development
+
+Run the project in any isolated Python environment, such as conda, venv, or uv. Local environment directories are not committed.
 
 ```bash
-curl 'http://localhost:8000/integrations/xhs/status?deep=true'
+pip install -r requirements-agent.txt
+playwright install chromium
+cp .env.example .env
 ```
 
-Start QR-code login:
+CLI demo:
 
 ```bash
-curl -X POST http://localhost:8000/integrations/xhs/login/qrcode \
-  -H 'Content-Type: application/json' \
-  -d '{"use_virtual_display": true, "timeout_seconds": 180}'
+python -m rednote_matrix.cli examples/sample_input.json
+python -m rednote_matrix.cli examples/risky_input.json
 ```
 
-Poll the session:
+FastAPI:
 
 ```bash
-curl http://localhost:8000/integrations/xhs/login/{session_id}
+python -m rednote_matrix.server.api
 ```
 
-Lightweight search:
+Flask workbench:
 
 ```bash
-curl -X POST http://localhost:8000/integrations/xhs/search \
-  -H 'Content-Type: application/json' \
-  -d '{"keywords": ["桌面收纳托盘 爆款笔记", "租房小桌面 桌面收纳托盘"], "max_notes_count": 6}'
-```
-
-### Web workbench
-
-```bash
-uv run flask --app rednote_matrix.web.workbench run --host 0.0.0.0 --port 8501
+flask --app rednote_matrix.web.workbench run --host 0.0.0.0 --port 8501
 ```
 
 Open http://localhost:8501
@@ -273,36 +241,10 @@ Users may input price information, but prices are used only for internal positio
 
 ---
 
-## Docker
-
-```bash
-docker build -t rednote-matrix-agent .
-docker run --rm rednote-matrix-agent
-```
-
-The image starts the FastAPI server on port `8000` by default.
-
-To run the Flask workbench:
-
-```bash
-docker run --rm -p 8501:8501 --env-file .env -v "$PWD/data:/app/data" rednote-matrix-agent \
-  flask --app rednote_matrix.web.workbench run --host 0.0.0.0 --port 8501
-```
-
-Or use Docker Compose:
-
-```bash
-docker compose up --build
-```
-
-The Docker image installs `requirements-agent.txt` (API, RAG, memory, and XHS Core) and pre-installs Playwright Chromium. Xvfb is bundled for QR-code login without a host display.
-
----
-
 ## Testing
 
 ```bash
-uv run python -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
 
 ---
