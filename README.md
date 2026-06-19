@@ -2,335 +2,169 @@
 
 <img src="rednote_matrix/web/static/rednote-copilot-logo.png" alt="RedNote Copilot logo" width="720">
 
-# RedNoteMatrix Copilot
+# RedNote Copilot
 
-[![Release](https://img.shields.io/badge/Release-v0.1.0--alpha-0066FF?style=flat-square)](./CHANGELOG.md)
-[![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-00C853?style=flat-square)](./LICENSE)
-[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-1C3C3C?style=flat-square&logo=langchain&logoColor=white)](https://www.langchain.com/langgraph)
-[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](./Dockerfile)
-[![Tests](https://img.shields.io/badge/Tests-unittest-E5A50A?style=flat-square)](./tests)
-[![RAG](https://img.shields.io/badge/RAG-Memory_Agent-7C4DFF?style=flat-square)]()
+[English README](./README_EN.md)
 
-**AI-native content agent for Xiaohongshu (小红书) brand seeding.**<br>
-Research-backed trend mining → structured viral drafting → humanized rewrite → compliance scanning → publish-ready copy.
-
-<!-- HERO: Replace with app/workbench screenshot or demo GIF -->
-<!-- Place video/screenshot at: docs/assets/hero-screenshot.png -->
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-screenshot-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/hero-screenshot-light.png">
-  <img alt="RedNoteMatrix Copilot workbench preview" src="docs/assets/hero-screenshot-light.png" width="100%">
-</picture>
+面向小红书种草场景的 AI Agent 工作台：爆款样本检索、结构化文案生成、真人网感改写、合规风险检查和多轮对话交付。
 
 </div>
 
 ---
 
-## Why RedNoteMatrix?
+## 项目定位
 
-Most AI copywriting tools produce generic, templated Xiaohongshu posts that feel like ads and get buried by the algorithm. RedNoteMatrix is built from the opposite direction: **we start with real creator anxiety data, mine high-interaction seeding patterns, and let a LangGraph agent generate, humanize, and police the copy until it passes compliance.**
+RedNote Copilot 不是“一键生成小红书文案”的普通聊天工具，而是围绕小红书内容运营的核心目标设计的 Agent 工作流：
 
-### Evidence: what creators actually worry about
+- 找到更接近真实平台语境的高互动样本。
+- 把商品信息转成适合小红书的标题、正文和标签。
+- 尽量避免硬广、极限词、价格直给等潜在风险。
+- 用多轮对话持续修改，并保留本地历史。
+- 通过前端工作台展示节点进度、样本列表和最终只读文案。
 
-We analyzed Xiaohongshu operation-related posts and comments to avoid building the product from imagined needs. The key point from the data is simple: users are not primarily asking for "more copy"; they are anxious about **traffic, visibility, compliance risk, and not knowing what structure makes a note work**.
+## 数据依据
 
-**Data scope and denominator**
+项目早期围绕“小红书运营太难了”“被限流”“笔记违规”“做小红书多账号”“爆款文案怎么写”等关键词抓取并分析了一批真实运营讨论数据。清洗后的文本分析结论显示，用户最集中的焦虑不是“缺一段文案”，而是：
 
-- Raw crawl: **15,832 JSONL rows**
-- Target posts: **50 posts** around Xiaohongshu operation difficulty, limited traffic, note violation, matrix operation, and viral-copy writing
-- Comment pipeline: 4,962 raw comments -> 4,798 deduped comments -> **4,623 valid comments**
-- Theme analysis denominator: **4,035 cleaned comments** after removing boilerplate/noise and very short unusable comments
-- Coding method: fixed dictionary, multi-label topic coding; one comment can match multiple themes
+| 痛点 | 数据表现 | 对应产品能力 |
+| --- | --- | --- |
+| 流量与曝光焦虑 | 低互动、低浏览、起号困难相关内容占比最高 | 爆款样本检索、趋势归纳、结构化标题和开头 |
+| 违规与限流恐惧 | 违规、审核、限流相关评论情绪强烈 | 合规扫描、风险词改写、循环回炉 |
+| 文案结构缺失 | 用户反复讨论标题、开头、框架和节奏 | 双标题、场景钩子、正文结构生成 |
+| AI 味与信任问题 | 频率不如流量焦虑高，但影响内容可信度 | 真人网感改写、弱化模板化表达 |
 
-| Rank | Pain point | Theme-coded comments | Share of coded comments | What it means for our agent |
-|------|------------|----------------------|-------------------------|-----------------------------|
-| 1 | Traffic / visibility anxiety | 810 | **20.07%** | Real-time viral search + trend pattern injection |
-| 2 | Account growth & followers | 402 | **9.96%** | Audience-aware hooks and retention-oriented structure |
-| 3 | Compliance / restriction risk | 201 | **4.98%** | Local compliance scanner + revision loop |
-| 4 | Structured viral framework | 167 | **4.14%** | Title, cover, hook, body, and tag skeleton |
-| 5 | Human voice / anti-AI feeling | 55 | **1.36%** | Humanizer node with multi-turn rewrite |
-
-This means the product argument should be framed carefully:
-
-- The strongest observed pain point is **low visibility / low traffic**, not AI itself.
-- Compliance and restriction anxiety is lower in frequency, but severe enough to justify a risk-control layer.
-- AI-specific complaints are sparse, so "anti-AI feeling" should be positioned as a quality and trust layer, not as the highest-frequency pain point.
-- The strongest product need is a workflow: **structured generation -> humanized rewrite -> compliance scan -> revision**, which a one-shot chat model does not provide.
-
-For final writeups, the most useful supporting figure is the plain theme distribution chart:
+推荐佐证图表位于本地数据目录：
 
 `data/xhs_ops_research_20260618/analysis/need_theme_analysis/theme_counts.png`
 
-It directly shows the topic coverage over cleaned comments without extra design interpretation. Use these files when you need the underlying evidence:
+相关分析报告：
 
-| Artifact | File |
-|----------|------|
-| Recommended evidence figure | `data/xhs_ops_research_20260618/analysis/need_theme_analysis/theme_counts.png` |
-| Full analysis report | `data/xhs_ops_research_20260618/analysis/need_theme_analysis/need_theme_report.md` |
-| Theme summary table | `data/xhs_ops_research_20260618/analysis/need_theme_analysis/theme_summary.csv` |
-| Strategic need summary | `data/xhs_ops_research_20260618/analysis/need_theme_analysis/strategic_need_summary.csv` |
-| Theme-coded comments | `data/xhs_ops_research_20260618/analysis/need_theme_analysis/theme_coded_comments.csv` |
-| Theme co-occurrence matrix | `data/xhs_ops_research_20260618/analysis/need_theme_analysis/theme_cooccurrence.csv` |
-| AI need validation matrix | `data/xhs_ops_research_20260618/analysis/ai_tool_need_validation/ai_tool_need_matrix.csv` |
-| AI need validation report | `data/xhs_ops_research_20260618/analysis/ai_tool_need_validation/ai_tool_need_validation_report.md` |
-| Word frequency | `data/xhs_ops_research_20260618/analysis/word_frequency.csv` |
-| Word cloud | `data/xhs_ops_research_20260618/analysis/wordcloud.png` |
+- `data/xhs_ops_research_20260618/analysis/need_theme_analysis/need_theme_report.md`
+- `data/xhs_ops_research_20260618/analysis/ai_tool_need_validation/ai_tool_need_validation_report.md`
 
-<!-- DEMO VIDEO: Replace with your recorded demo -->
-<!-- Place demo video at: docs/assets/demo-video.mp4 -->
+`data/` 目录默认不进入 Git 仓库。
 
-https://github.com/user-attachments/assets/rednotematrix-demo-placeholder
+## 核心能力
 
----
+- **LangGraph Agent 工作流**：输入解析、记忆检索、爆款检索、趋势归纳、结构生成、真人改写、合规检查、最终打包。
+- **小红书实时检索节点**：支持 Chrome 登录态、搜索高互动笔记，并逐条把样本推送到前端。
+- **多轮对话**：用户可以继续补充需求，例如“更口语一点”“这版加上价格”，后端会继承上一轮上下文。
+- **记忆隔离**：按品牌、商品和命名空间检索本地记忆，避免不同商品互相污染。
+- **本地历史会话**：工作台历史保存在 `.rednote_workbench_history/`，不会进入仓库。
+- **只读输出卡片**：前端右侧固定展示标题、正文、标签，并提供复制按钮。
 
-## Features
-
-<div align="center">
-
-| Research | Drafting | Humanization | Compliance | Delivery |
-|----------|----------|--------------|------------|----------|
-| Real-time XHS viral search | Structured 6-part seeding skeleton | Anti-AI rewrite with voice memory | Local risk lexicon + LLM judge | CLI, API, and web workbench |
-| Trend pattern injection | Dual-title + hook + tag generation | Rejection-driven revision loop | Hard-ad /导流 /极限词 scan | Copy-ready title, body, tags |
-| Memory-backed brand facts | Scenario-first storytelling | Max-loop safety cap | Publish checklist + `needs_review` flag | SSE node streaming |
-
-</div>
-
-### Highlights
-
-- **LangGraph-native workflow** — deterministic state machine with explicit reject/revision loops.
-- **XHS Core integration** — built-in persistent browser, QR-code login, cookie management, and signed search (inspired by MediaCrawler).
-- **Memory layer** — brand facts, product specs, and audience personas persist across sessions.
-- **Compliance-first** — every draft is scanned before delivery; risky drafts are sent back for humanization or restructuring.
-- **Three interfaces** — command-line, FastAPI, and a Flask web workbench.
-
----
-
-## Agent Flow
+## Agent 流程
 
 ```text
 input_parser
-  -> market_research_agent   (real-time XHS search if research not completed)
-  -> trend_agent             (pattern injection from xhs_viral_seed_20260618)
-  -> structure_agent         (6-part seeding skeleton + dual title)
-  -> humanizer_agent         (anti-AI, scenario-first rewrite)
-  -> compliance_agent        (risk scan + structural score)
+  -> memory_retriever
+  -> market_research_agent
+  -> trend_agent
+  -> structure_agent
+  -> humanizer_agent
+  -> compliance_agent
   -> revision_router
       -> pass -> final_packager
-      -> compliance/ai_trace reject -> humanizer_agent -> compliance_agent
-      -> structure reject -> structure_agent -> humanizer_agent -> compliance_agent
+      -> reject -> humanizer_agent
 ```
 
-Nodes run as a LangGraph state machine. `market_research_agent` performs real-time Xiaohongshu search only when the research flag has not been satisfied. `compliance_agent` is the core rejection node: drafts that hit forbidden words, hard-ad导流 patterns, or AI-template phrasing are sent back to `humanizer_agent`; drafts with insufficient structure return to `structure_agent`. If the maximum revision loop count is reached without resolution, the output is flagged as `needs_review` and delivered with a publish checklist.
+## 目录结构
 
----
-
-## Quick Start
-
-### 1. Environment
-
-The project uses a local `.venv`. Do not pollute the system Python.
-
-```bash
-uv pip install -r requirements.txt
+```text
+rednote_matrix/
+  agents/          Agent 节点
+  core/            LangGraph、模型和流式运行器
+  integrations/    小红书检索与登录相关集成
+  memory/          SQLite/FTS 本地记忆
+  rules/           合规规则
+  server/          FastAPI 接口
+  web/             Flask 工作台
+docs/              PRD、架构图和流程图
+examples/          示例输入
+tests/             单元测试
+scripts/           数据分析脚本
 ```
 
-### 2. Configure LLM
+## 环境配置
+
+建议使用项目内 `.venv`，不要污染全局 Python 环境。
 
 ```bash
-cp .env.example .env
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-agent.txt
+playwright install chromium
 ```
 
-```bash
-# OpenAI-compatible
-OPENAI_API_KEY=your_key
-OPENAI_MODEL=your_model
-OPENAI_BASE_URL=https://api.openai.com/v1
+根目录维护 `.env`，该文件已被 `.gitignore` 忽略：
 
-# Or DeepSeek
-DEEPSEEK_API_KEY=your_key
-OPENAI_MODEL=deepseek-v4-pro
+```bash
+DEEPSEEK_API_KEY=your_key_here
 OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-chat
 ```
 
-### 3. Run CLI demo
+## 运行方式
+
+CLI 示例：
 
 ```bash
-uv run python -m rednote_matrix.cli examples/sample_input.json
-uv run python -m rednote_matrix.cli examples/risky_input.json
+.venv/bin/python -m rednote_matrix.cli examples/sample_input.json
 ```
 
-Add `--json` for the full state:
+FastAPI：
 
 ```bash
-uv run python -m rednote_matrix.cli examples/sample_input.json --json
+.venv/bin/python -m rednote_matrix.server.api
 ```
 
----
-
-## Usage
-
-### CLI
-
-Default output is user-facing Xiaohongshu copy (title, body, tags). Debug output includes `draft`, `risk_items`, `revision_history`, and `publish_checklist`.
-
-### FastAPI server
+Flask 工作台：
 
 ```bash
-uv run python -m rednote_matrix.server.api
+.venv/bin/flask --app rednote_matrix.web.workbench run --host 0.0.0.0 --port 8501
 ```
 
-Health check:
+打开：
 
-```bash
-curl http://localhost:8000/health
+```text
+http://localhost:8501
 ```
 
-Chat endpoint:
+Docker：
 
 ```bash
-curl -X POST http://localhost:8000/chat \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "message": "帮我写一条种草笔记",
-    "debug": true,
-    "agent_input": {
-      "product_name": "桌面收纳托盘",
-      "selling_points": ["小桌面也能放下", "拿东西不用翻半天"],
-      "target_audience": "租房小桌面用户",
-      "scenario": "晚上一边办公一边找东西",
-      "memory_namespace": "brand/acme/tray"
-    }
-  }'
+docker build -t rednote-copilot-agent .
+docker run --rm -p 8000:8000 --env-file .env -v "$PWD/data:/app/data" rednote-copilot-agent
 ```
 
-### XHS Core real-time research
-
-Check integration status:
+运行工作台：
 
 ```bash
-curl 'http://localhost:8000/integrations/xhs/status?deep=true'
-```
-
-Start QR-code login:
-
-```bash
-curl -X POST http://localhost:8000/integrations/xhs/login/qrcode \
-  -H 'Content-Type: application/json' \
-  -d '{"use_virtual_display": true, "timeout_seconds": 180}'
-```
-
-Poll the session:
-
-```bash
-curl http://localhost:8000/integrations/xhs/login/{session_id}
-```
-
-Lightweight search:
-
-```bash
-curl -X POST http://localhost:8000/integrations/xhs/search \
-  -H 'Content-Type: application/json' \
-  -d '{"keywords": ["桌面收纳托盘 爆款笔记", "租房小桌面 桌面收纳托盘"], "max_notes_count": 6}'
-```
-
-### Web workbench
-
-```bash
-uv run flask --app rednote_matrix.web.workbench run --host 0.0.0.0 --port 8501
-```
-
-Open http://localhost:8501
-
-The workbench shows the LangGraph node stream in the center panel and renders final copy into read-only title/body/tags cards on the right.
-
-<!-- WORKBENCH SCREENSHOT: Replace with your actual workbench screenshot -->
-<!-- Place screenshot at: docs/assets/workbench-screenshot.png -->
-
-<img alt="Workbench" src="docs/assets/workbench-screenshot.png" width="100%">
-
----
-
-## Research Methodology
-
-Our trend rules are not hand-waved. They are distilled from a **2026-06-18 lightweight crawl** of high-interaction Xiaohongshu seeding content and creator operations discussions.
-
-### Extracted viral patterns
-
-- **Title patterns**: emotion/suspense first, strong scenario, light contrast, audience label, pitfall-avoidance.
-- **Content skeleton**: specific scenario → old struggle/misconception → discovery moment → real feeling → limits/pitfalls → engagement hook.
-- **Scoring dimensions**: keyword coverage, structural completeness, timeliness, content quality.
-
-These patterns live in `rednote_matrix/skills/xiaohongshu/` and are consumed by `trend_agent` inside the LangGraph workflow. Full research notes: [`docs/xhs_viral_seed_20260618.md`](./docs/xhs_viral_seed_20260618.md).
-
-### Pricing note
-
-Users may input price information, but prices are used only for internal positioning and budget judgment. Final titles, bodies, and tags do **not** expose specific prices, selling prices, or promotional prices by default, reducing hard-ad and review risk.
-
----
-
-## Docker
-
-```bash
-docker build -t rednote-matrix-agent .
-docker run --rm rednote-matrix-agent
-```
-
-The image starts the FastAPI server on port `8000` by default.
-
-To run the Flask workbench:
-
-```bash
-docker run --rm -p 8501:8501 --env-file .env -v "$PWD/data:/app/data" rednote-matrix-agent \
+docker run --rm -p 8501:8501 --env-file .env -v "$PWD/data:/app/data" rednote-copilot-agent \
   flask --app rednote_matrix.web.workbench run --host 0.0.0.0 --port 8501
 ```
 
-Or use Docker Compose:
+## 测试
 
 ```bash
-docker compose up --build
+.venv/bin/python -m unittest tests.test_api tests.test_workbench tests.test_agent_graph -v
 ```
 
-The Docker image installs `requirements-agent.txt` (API, RAG, memory, and XHS Core) and pre-installs Playwright Chromium. Xvfb is bundled for QR-code login without a host display.
+当前核心测试覆盖：
 
----
+- 自然语言输入解析。
+- 多轮对话继承上下文。
+- 用户显式要求价格时的处理。
+- 工作台 SSE 流式输出。
+- 小红书登录、搜索和异常状态接口。
 
-## Testing
+## 注意事项
 
-```bash
-uv run python -m unittest discover -s tests -v
-```
+- 用户可以输入价格，但默认不建议直接在最终文案中输出价格，避免触发平台风险或硬广感。
+- 小红书实时检索依赖登录态，可能受平台风控影响。
+- 本项目借鉴了 MediaCrawler 的小红书抓取思路，但保留为项目内轻量集成。
+- `.env`、`.venv`、`data/`、`.rednote_workbench_history/` 都不应提交。
 
----
+## 英文文档
 
-## Roadmap
-
-- [x] LangGraph agent end-to-end loop
-- [x] XHS Core real-time search integration
-- [x] Flask web workbench with SSE streaming
-- [x] Memory layer and brand fact persistence
-- [x] Compliance scanner with reject/revision loop
-- [ ] Account-permission resilience for XHS search
-- [ ] Frontend progress events during QR-code wait
-- [ ] Logo and visual identity
-- [ ] Demo video and screenshot gallery
-- [ ] Multi-platform export (copy, Markdown, PDF)
-
----
-
-## Contributing
-
-Issues, PRs, and research feedback are welcome. Please keep changes minimal and aligned with the existing LangGraph structure. If you update features documented in `AGENTS.md`, update the corresponding docs as well.
-
-## License
-
-[MIT](./LICENSE)
-
----
-
-<div align="center">
-
-Built with ❤️ for creators who are tired of sounding like ads.
-
-</div>
+英文版说明见：[README_EN.md](./README_EN.md)
