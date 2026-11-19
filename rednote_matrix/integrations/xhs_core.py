@@ -129,6 +129,20 @@ def browser_profile_dir() -> Path:
     return path
 
 
+def _prepare_project_browser_profile(reset: bool = False) -> Path:
+    target = browser_profile_dir()
+    if reset and target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+    target.mkdir(parents=True, exist_ok=True)
+    for pattern in ("Singleton*", "lockfile"):
+        for item in target.glob(pattern):
+            if item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
+            else:
+                item.unlink(missing_ok=True)
+    return target
+
+
 def _cdp_status_path() -> Path:
     return persistent_browser_dir() / "cdp_status.json"
 
@@ -186,6 +200,11 @@ def check_xhs_environment(deep: bool = False) -> XhsCoreEnvironment:
 
 def check_xhs_auth(sync_browser: bool = True) -> XhsAuthStatus:
     path = cookie_path()
+    if sync_browser:
+        # 优先检测用户日常 Chrome 的 CDP 登录态
+        synced = sync_cookie_from_user_chrome(verify=True)
+        if synced:
+            return synced
     if not path.exists():
         if sync_browser:
             synced = sync_cookie_from_active_browser(verify=False)
@@ -202,7 +221,7 @@ def check_xhs_auth(sync_browser: bool = True) -> XhsAuthStatus:
         return XhsAuthStatus(False, str(path), False, "cookie 缺少 web_session")
     ok, message = _verify_cookie_sync(cookie_text)
     if not ok and sync_browser:
-        synced = sync_cookie_from_active_browser(verify=False)
+        synced = sync_cookie_from_user_chrome(verify=True) or sync_cookie_from_active_browser(verify=False)
         if synced:
             return synced
     return XhsAuthStatus(ok, str(path), True, message, ok)
@@ -214,6 +233,51 @@ def save_cookie(cookie: str) -> XhsAuthStatus:
     path.write_text(json.dumps({"cookie": cookie, "saved_at": int(time.time())}, ensure_ascii=False, indent=2), encoding="utf-8")
     has_web_session = "web_session=" in cookie
     return XhsAuthStatus(has_web_session, str(path), has_web_session, "cookie 已保存，待验证", False)
+
+
+def sync_cookie_from_user_chrome(verify: bool = True) -> XhsAuthStatus | None:
+    try:
+        return asyncio.run(_sync_cookie_from_user_chrome(verify=verify))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(_sync_cookie_from_user_chrome(verify=verify))
+        finally:
+            loop.close()
+    except Exception:
+        return None
+
+
+async def _sync_cookie_from_user_chrome(verify: bool = True) -> XhsAuthStatus | None:
+    try:
+        import httpx
+        response = await httpx.AsyncClient(timeout=3).get(f"http://127.0.0.1:{CDP_DEBUG_PORT}/json/version")
+        if response.status_code != 200:
+            return None
+        ws_url = response.json().get("webSocketDebuggerUrl", "")
+        if not ws_url:
+            return None
+    except Exception:
+        return None
+
+    try:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.connect_over_cdp(ws_url, timeout=10000)
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            cookie_text = _cookie_string(await context.cookies(urls=[XHS_DOMAIN]))
+            await browser.close()
+    except Exception:
+        return None
+
+    if "web_session=" not in cookie_text:
+        return None
+    saved = save_cookie(cookie_text)
+    if not verify:
+        return XhsAuthStatus(True, saved.cookie_path, True, "已从用户日常 Chrome 同步登录态", False, True)
+    ok, message = _verify_cookie_sync(cookie_text)
+    return XhsAuthStatus(ok, saved.cookie_path, True, message, ok, True)
 
 
 def sync_cookie_from_active_browser(verify: bool = False) -> XhsAuthStatus | None:
@@ -343,6 +407,19 @@ def _process_alive(pid: int | None) -> bool:
     return True
 
 
+def _playwright_chromium_path() -> str:
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            path = str(playwright.chromium.executable_path)
+            if path and Path(path).is_file():
+                return path
+    except Exception:
+        pass
+    return ""
+
+
 def _find_browser_path() -> str:
     configured = [
         os.environ.get("XHS_BROWSER_PATH", ""),
@@ -353,6 +430,7 @@ def _find_browser_path() -> str:
         if path and Path(path).is_file():
             return path
 
+    # 优先使用系统安装的 Chrome/Edge，方便复用用户已有的登录态
     system = platform.system()
     if system == "Windows":
         candidates = [
@@ -438,12 +516,12 @@ def _terminate_process_tree(pid: int | None) -> None:
         os.kill(int(pid), signal.SIGTERM)
 
 
-async def _ensure_cdp_browser(headless: bool = False, force_restart: bool = False) -> dict[str, Any]:
+async def _ensure_cdp_browser(headless: bool = False, force_restart: bool = False, reset_profile: bool = False) -> dict[str, Any]:
     status_path = _cdp_status_path()
     current = _read_json_file(status_path)
     pid = current.get("pid")
     port = int(current.get("port") or 0)
-    if force_restart:
+    if force_restart or reset_profile:
         _terminate_process_tree(int(pid) if isinstance(pid, int) else None)
     elif _process_alive(pid) and port:
         try:
@@ -457,7 +535,7 @@ async def _ensure_cdp_browser(headless: bool = False, force_restart: bool = Fals
         raise RuntimeError("未找到可用的 Chrome/Chromium/Edge 浏览器")
 
     port = _find_available_port()
-    user_data_dir = browser_profile_dir()
+    user_data_dir = _prepare_project_browser_profile(reset=reset_profile).resolve()
     cdp_log = persistent_browser_dir() / "chrome_cdp.log"
     args = [
         browser_path,
@@ -477,6 +555,8 @@ async def _ensure_cdp_browser(headless: bool = False, force_restart: bool = Fals
         "--disable-dev-shm-usage",
         "--disable-infobars",
         "--start-maximized",
+        "--new-window",
+        "--profile-directory=Default",
         f"--user-data-dir={user_data_dir}",
         XHS_DOMAIN,
     ]
@@ -484,11 +564,14 @@ async def _ensure_cdp_browser(headless: bool = False, force_restart: bool = Fals
         args.remove("--start-maximized")
         args.extend(["--headless=new", "--disable-gpu"])
 
-    if platform.system() == "Windows":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-        process = subprocess.Popen(args, stdout=cdp_log.open("a", encoding="utf-8"), stderr=subprocess.STDOUT, creationflags=creationflags)
-    else:
-        process = subprocess.Popen(args, stdout=cdp_log.open("a", encoding="utf-8"), stderr=subprocess.STDOUT, start_new_session=True)
+    with cdp_log.open("a", encoding="utf-8") as cdp_log_file:
+        cdp_log_file.write(f"\nLaunching CDP Chrome with user-data-dir={user_data_dir} port={port}\n")
+        cdp_log_file.flush()
+        if platform.system() == "Windows":
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+            process = subprocess.Popen(args, stdout=cdp_log_file, stderr=subprocess.STDOUT, creationflags=creationflags)
+        else:
+            process = subprocess.Popen(args, stdout=cdp_log_file, stderr=subprocess.STDOUT, start_new_session=True)
 
     ws_url = await _cdp_websocket_url(port, timeout_seconds=BROWSER_LAUNCH_TIMEOUT_SECONDS)
     payload = {
@@ -504,8 +587,13 @@ async def _ensure_cdp_browser(headless: bool = False, force_restart: bool = Fals
     return {**payload, "ws_url": ws_url}
 
 
-async def _connect_cdp_context(playwright: Any, headless: bool = False, force_restart: bool = False) -> tuple[Any, Any, dict[str, Any]]:
-    cdp = await _ensure_cdp_browser(headless=headless, force_restart=force_restart)
+async def _connect_cdp_context(
+    playwright: Any,
+    headless: bool = False,
+    force_restart: bool = False,
+    reset_profile: bool = False,
+) -> tuple[Any, Any, dict[str, Any]]:
+    cdp = await _ensure_cdp_browser(headless=headless, force_restart=force_restart, reset_profile=reset_profile)
     browser = await playwright.chromium.connect_over_cdp(cdp["ws_url"], timeout=BROWSER_LAUNCH_TIMEOUT_SECONDS * 1000)
     context = browser.contexts[0] if browser.contexts else await browser.new_context(
         viewport={"width": 1280, "height": 900},
@@ -771,7 +859,7 @@ async def _run_login_worker(session_id: str, timeout_seconds: int) -> None:
         from playwright.async_api import async_playwright
 
         async with async_playwright() as playwright:
-            context, _browser, cdp = await _connect_cdp_context(playwright, headless=False)
+            context, _browser, cdp = await _connect_cdp_context(playwright, headless=False, force_restart=True, reset_profile=True)
             _append_session_log(
                 log_path,
                 {

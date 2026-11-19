@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 
 from rednote_matrix.integrations.xhs_core import (
     XhsCoreEnvironment,
+    _ensure_cdp_browser,
     search_xhs_keywords,
     start_persistent_browser,
     start_qrcode_login_process,
@@ -153,6 +155,42 @@ class ApiTest(unittest.TestCase):
         popen.assert_called_once()
         args, kwargs = popen.call_args
         self.assertEqual(args[0][2], "rednote_matrix.integrations.xhs_login_worker")
+
+    def test_cdp_browser_uses_clean_project_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_data_dir = os.environ.get("REDNOTE_DATA_DIR")
+            os.environ["REDNOTE_DATA_DIR"] = tmpdir
+            fake_browser = Path(tmpdir) / "chrome"
+            fake_browser.write_text("", encoding="utf-8")
+            profile_dir = Path(tmpdir) / "xhs_core" / "browser_profile"
+            profile_dir.mkdir(parents=True)
+            stale_file = profile_dir / "stale_cookie_state"
+            stale_file.write_text("old-login", encoding="utf-8")
+            try:
+                with (
+                    patch("rednote_matrix.integrations.xhs_core._find_browser_path", return_value=str(fake_browser)),
+                    patch("rednote_matrix.integrations.xhs_core._find_available_port", return_value=9333),
+                    patch("rednote_matrix.integrations.xhs_core._cdp_websocket_url", new_callable=AsyncMock) as websocket_url,
+                    patch("rednote_matrix.integrations.xhs_core.subprocess.Popen") as popen,
+                ):
+                    websocket_url.return_value = "ws://127.0.0.1:9333/devtools/browser/test"
+                    popen.return_value.pid = 4321
+                    status = asyncio.run(_ensure_cdp_browser(force_restart=True, reset_profile=True))
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("REDNOTE_DATA_DIR", None)
+                else:
+                    os.environ["REDNOTE_DATA_DIR"] = old_data_dir
+
+        self.assertEqual(status["port"], 9333)
+        self.assertFalse(stale_file.exists())
+        popen.assert_called_once()
+        args, _kwargs = popen.call_args
+        launch_args = args[0]
+        self.assertIn("--new-window", launch_args)
+        self.assertIn("--profile-directory=Default", launch_args)
+        self.assertIn(f"--user-data-dir={profile_dir}", launch_args)
+        self.assertTrue(all("user_profile_copy" not in item for item in launch_args))
 
     def test_qrcode_image_endpoint_returns_404_before_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

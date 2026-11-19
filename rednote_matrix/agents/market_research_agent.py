@@ -83,8 +83,8 @@ def _run_market_research_agent(
     allowed_statuses = {"completed", "needs_login", "unconfigured", "verification_required", "error", "ready"}
     status = result.status if result.status in allowed_statuses else "error"
 
-    # 标记首轮爬取完成（搜索结果不论成败，后续不再爬）
-    updated_input = {**state["user_input"], "research_completed": True}
+    research_completed = status == "completed"
+    updated_input = {**state["user_input"], "research_completed": research_completed}
     context = MarketResearchContext(
         enabled=True,
         status=status,

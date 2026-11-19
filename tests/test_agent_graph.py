@@ -4,10 +4,12 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from rednote_matrix.agents.market_research_agent import run_market_research_agent
 from rednote_matrix.core.models import AgentInput
 from rednote_matrix.core.runner import run_agent
-from rednote_matrix.integrations.xhs_core import build_default_keywords
+from rednote_matrix.integrations.xhs_core import XhsCoreEnvironment, XhsSearchResult, build_default_keywords
 from rednote_matrix.memory.store import MemoryStore
 from rednote_matrix.skills.xiaohongshu.framework import HIGH_INTERACTION_PATTERNS
 from tests.llm_fixtures import mock_agent_llm
@@ -193,6 +195,30 @@ class AgentGraphTest(unittest.TestCase):
         notes = "\n".join(result.draft.structure_notes)
         for rule in HIGH_INTERACTION_PATTERNS[:3]:
             self.assertIn(rule, notes)
+
+    def test_market_research_needs_login_does_not_mark_completed(self) -> None:
+        state = {
+            "user_input": AgentInput(
+                product_name="桌面收纳托盘",
+                target_audience="租房小桌面用户",
+                enable_realtime_research=True,
+            ).model_dump(),
+            "revision_history": [],
+        }
+        with (
+            patch(
+                "rednote_matrix.agents.market_research_agent.check_xhs_environment",
+                return_value=XhsCoreEnvironment(True, True, True, [], []),
+            ),
+            patch(
+                "rednote_matrix.agents.market_research_agent.search_xhs_keywords",
+                return_value=XhsSearchResult("needs_login", "/tmp/xhs", {"keywords": []}, [], message="未登录"),
+            ),
+        ):
+            result = run_market_research_agent(state)
+
+        self.assertFalse(result["user_input"]["research_completed"])
+        self.assertEqual(result["market_research_context"]["status"], "needs_login")
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ from rednote_matrix.integrations.xhs_core import (
     start_persistent_browser,
     start_qrcode_login_process,
     stop_persistent_browser,
+    sync_cookie_from_active_browser,
 )
 from rednote_matrix.memory.conversation import ConversationStore
 from rednote_matrix.memory.ingestion import ingest_document
@@ -211,6 +212,14 @@ def get_xhs_persistent_browser_status() -> dict[str, Any]:
 @app.post("/integrations/xhs/browser/stop")
 def stop_xhs_persistent_browser() -> dict[str, Any]:
     return result_to_dict(stop_persistent_browser())
+
+
+@app.post("/integrations/xhs/browser/sync")
+def sync_xhs_cookie_from_browser() -> dict[str, Any]:
+    synced = sync_cookie_from_active_browser(verify=True)
+    if not synced:
+        raise HTTPException(status_code=400, detail="无法从当前浏览器同步登录态，请确保浏览器窗口仍在运行且已登录小红书")
+    return result_to_dict(synced)
 
 
 @app.get("/integrations/xhs/browser/qrcode")

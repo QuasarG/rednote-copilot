@@ -1047,6 +1047,7 @@ async function waitForXhsLogin(sessionId) {
     }
     if (["error", "blocked", "timeout", "missing"].includes(session?.status)) {
       updateLoginGateStatus(session.message || "登录流程中断，请刷新页面后重新运行。");
+      return false;
     } else if (!countdownExpired && Date.now() >= countdownDeadline) {
       countdownExpired = true;
       updateLoginGateStatus("120s 内未检测到登录，仍在持续检测登录态。");
